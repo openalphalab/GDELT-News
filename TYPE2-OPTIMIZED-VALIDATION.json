@@ -1,0 +1,41 @@
+{
+  "raw_sha256": "4b73eed6c10471fa8c05e2eca4d403be66ba5d94c93f195fe4746ceabc4d49bb",
+  "articles_sha256": "8d6d460efc40a20e47d70d9db803e2760184be1a768ddc2a195e0efc9a9bb1eb",
+  "type2_observations": 190,
+  "language_observations": {
+    "zh": 147,
+    "zh-TW": 17,
+    "ja": 26
+  },
+  "input_fragments": 223797,
+  "merged_fragments": 189319,
+  "unmerged_fragments": 34478,
+  "recovered_codepoints": 216417,
+  "residual_segments": 179,
+  "residual_segment_codepoints": 44822,
+  "search_statuses": {
+    "not_needed": 178,
+    "budget_exhausted": 6,
+    "no_complete_assembly": 5,
+    "unique_complete_assembly": 1
+  },
+  "search_steps": 135302,
+  "stop_reasons": {
+    "all_fragments_merged": 168,
+    "no_confident_overlap": 11,
+    "ambiguous_continuation": 11
+  },
+  "all_fragments_accounted_for": true,
+  "all_placed_fragments_present_in_text": true,
+  "all_fragments_assigned_to_exactly_one_section": true,
+  "all_segment_fragments_present_in_segment_text": true,
+  "best_effort_observations": 190,
+  "best_effort_join_methods": {
+    "seed": 190,
+    "position_only": 42,
+    "contained": 13,
+    "overlap_estimate": 124
+  },
+  "all_best_effort_fragments_present": true,
+  "scope": "Source evidence checks; not a publisher-ground-truth accuracy measurement"
+}

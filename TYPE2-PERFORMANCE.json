@@ -1,0 +1,75 @@
+{
+  "scope": "Single-thread kernel: includes input cloning and reconstruction; excludes file parsing, serialization, downloads. Peak memory includes the complete benchmark process.",
+  "input_sha256": "2f7f8af1f18a63502f0d86ca95ff96cdfae1394eb4d1de346ce67f75c4ea5e69",
+  "runs": {
+    "baseline": [
+      {
+        "seconds": 3.7178193,
+        "peak_working_set_bytes": 136351744,
+        "version": "0.3.0",
+        "recovery_sha256": "98cdce574e2da3bcac784c8a717b70817a4957a04091f43877dbbf76f9767fc4"
+      },
+      {
+        "seconds": 4.7099389,
+        "peak_working_set_bytes": 136306688,
+        "version": "0.3.0",
+        "recovery_sha256": "98cdce574e2da3bcac784c8a717b70817a4957a04091f43877dbbf76f9767fc4"
+      },
+      {
+        "seconds": 4.3220868,
+        "peak_working_set_bytes": 136421376,
+        "version": "0.3.0",
+        "recovery_sha256": "98cdce574e2da3bcac784c8a717b70817a4957a04091f43877dbbf76f9767fc4"
+      },
+      {
+        "seconds": 4.2108368,
+        "peak_working_set_bytes": 136069120,
+        "version": "0.3.0",
+        "recovery_sha256": "98cdce574e2da3bcac784c8a717b70817a4957a04091f43877dbbf76f9767fc4"
+      },
+      {
+        "seconds": 4.2139767,
+        "peak_working_set_bytes": 136343552,
+        "version": "0.3.0",
+        "recovery_sha256": "98cdce574e2da3bcac784c8a717b70817a4957a04091f43877dbbf76f9767fc4"
+      }
+    ],
+    "optimized": [
+      {
+        "seconds": 0.536076,
+        "peak_working_set_bytes": 50454528,
+        "version": "0.4.0",
+        "recovery_sha256": "5d62c3ea129e03e3a777db50533660e74c59af5b8a88e9a6c3a5031b05370745"
+      },
+      {
+        "seconds": 0.5492708,
+        "peak_working_set_bytes": 50200576,
+        "version": "0.4.0",
+        "recovery_sha256": "5d62c3ea129e03e3a777db50533660e74c59af5b8a88e9a6c3a5031b05370745"
+      },
+      {
+        "seconds": 0.6155243,
+        "peak_working_set_bytes": 50704384,
+        "version": "0.4.0",
+        "recovery_sha256": "5d62c3ea129e03e3a777db50533660e74c59af5b8a88e9a6c3a5031b05370745"
+      },
+      {
+        "seconds": 0.6178268,
+        "peak_working_set_bytes": 50180096,
+        "version": "0.4.0",
+        "recovery_sha256": "5d62c3ea129e03e3a777db50533660e74c59af5b8a88e9a6c3a5031b05370745"
+      },
+      {
+        "seconds": 0.5722369,
+        "peak_working_set_bytes": 50159616,
+        "version": "0.4.0",
+        "recovery_sha256": "5d62c3ea129e03e3a777db50533660e74c59af5b8a88e9a6c3a5031b05370745"
+      }
+    ]
+  },
+  "baseline_median_seconds": 4.2139767,
+  "baseline_median_peak_working_set_bytes": 136343552,
+  "optimized_median_seconds": 0.5722369,
+  "optimized_median_peak_working_set_bytes": 50200576,
+  "kernel_speedup": 7.3640422349554875
+}

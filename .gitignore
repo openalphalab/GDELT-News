@@ -1,0 +1,15 @@
+/target/
+/data/
+/benchmark-results.json
+
+
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+!.env.example
+secrets/
+state/
+*.pem
+*.key

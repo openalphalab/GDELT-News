@@ -1,0 +1,22 @@
+{
+  "raw_sha256": "4b73eed6c10471fa8c05e2eca4d403be66ba5d94c93f195fe4746ceabc4d49bb",
+  "articles_sha256": "75f8bb3776cc2c5e86fe3820dc6f0d62261172638752bd62b6e544c362443b52",
+  "type2_observations": 190,
+  "language_observations": {
+    "zh": 147,
+    "zh-TW": 17,
+    "ja": 26
+  },
+  "input_fragments": 223797,
+  "merged_fragments": 189614,
+  "unmerged_fragments": 34183,
+  "recovered_codepoints": 216859,
+  "stop_reasons": {
+    "all_fragments_merged": 167,
+    "no_confident_overlap": 12,
+    "ambiguous_continuation": 11
+  },
+  "all_fragments_accounted_for": true,
+  "all_placed_fragments_present_in_text": true,
+  "scope": "Source evidence checks; not a publisher-ground-truth accuracy measurement"
+}

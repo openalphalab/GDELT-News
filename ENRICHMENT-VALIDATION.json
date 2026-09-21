@@ -1,0 +1,37 @@
+{
+  "observations": 2359,
+  "all_original_fields_and_texts_unchanged": true,
+  "packed_round_trip_verified": true,
+  "all_dataset_checksums_verified": true,
+  "ggg_exact_url_country_fields_verified": true,
+  "tokenizer": "o200k_base",
+  "measurements": [
+    {
+      "file": "observations.enriched.jsonl",
+      "bytes": 12012714,
+      "tokens": 3057170,
+      "zstd9_bytes": 2919750
+    },
+    {
+      "file": "observations.enriched.packed.json",
+      "bytes": 11139160,
+      "tokens": 2856129,
+      "zstd9_bytes": 2984952
+    }
+  ],
+  "enrichment_tests_passed": 10,
+  "dataset_sha256s": {
+    "MASTER-GDELTDOMAINSBYCOUNTRY-MAY2018.TXT": "45c0d236e698fdf8bb5690098760cc7dded796acf5ce8d4cb17fbe99a2100467",
+    "public_suffix_list.dat": "ffd93eadaf266e38209b7970d4e2902723cf2a528d4bdc6a216471ebe66b1575",
+    "20250316000100.gal.json.gz": "6f160adcf5eaf28e726c609e6452424c6fa1e2ad8321ba2d22778ce46041dcc0",
+    "20250316000100.gemg.json.gz": "cce507b162d4fbcce278439476c4dee54a78374d6f3cdcb4bcf5869c1f7365e8",
+    "20250316.ggg.v1.english.json.gz": "300029bcb2724ba8e1d85bb35a7c35138c3407fa19df07f43d83ba6e5aa75eb1",
+    "20250316000000.gkg.csv.zip": "cb5acfafe546183050a800312e65eb4a4bc7e3d88ba4ae42ad36c488e1f2f800",
+    "20250316000000.translation.gkg.csv.zip": "09c21fa9d389e0020d4735e9cf9c252f61ada142704961ad3f63bdaa0189d9bd",
+    "20250316001500.gkg.csv.zip": "4ed18e9e2473e6fcf0a5b6b1a12ee68df68d9ffcdfbda06af4bbef44c9a1606e",
+    "20250316001500.translation.gkg.csv.zip": "6492b1447da37f34a430b78a44403cc0c287158b45fc1140008f355427b5a5db",
+    "20250316003000.gkg.csv.zip": "2f3727d6aa5f306a00b063fe356dc16c6e420749166cbb3c26c641656250bbfd",
+    "20250316003000.translation.gkg.csv.zip": "fb8072090248e44db92afc932a0bab97fa67baec3340bd62a94fbc78930e34b1"
+  },
+  "output_directory": "data/exports/20250316000100-enriched-v2"
+}

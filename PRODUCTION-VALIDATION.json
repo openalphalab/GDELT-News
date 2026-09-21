@@ -1,0 +1,20 @@
+{
+  "version": "0.4.0",
+  "windows_x64_tests_passed": 48,
+  "linux_x64_tests_passed": 48,
+  "fmt_and_clippy_passed": true,
+  "container_image": "sha256:337952d7581eb0b6c4c06602594e7ccca08cdb511c851e64d70ada6f2810c0e8",
+  "container_uid": 10001,
+  "runtime_constraints": {
+    "root_filesystem": "read_only",
+    "capabilities": "none",
+    "no_new_privileges": true,
+    "cpu_limit": 2,
+    "memory_limit_gib": 4
+  },
+  "real_sample_observations": 2359,
+  "all_cross_platform_export_observations_identical": true,
+  "repeat_collection_verified_cache": true,
+  "arm64_tested": false,
+  "deployed": false
+}

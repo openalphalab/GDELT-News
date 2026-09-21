@@ -1,0 +1,25 @@
+{
+  "input": "20250316000100.webngrams.json.gz",
+  "input_sha256": "4b73eed6c10471fa8c05e2eca4d403be66ba5d94c93f195fe4746ceabc4d49bb",
+  "upstream_revision": "d6babe296e6b40b01465c068f72e30343545009e",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "python_version": "3.10.0",
+  "articles": 128,
+  "total_source_articles": 2169,
+  "sampling": "evenly spaced URL-sorted groups",
+  "fragments": 69839,
+  "python_seconds": [
+    13.463463799998863,
+    12.498588699992979,
+    12.621641699995962
+  ],
+  "rust_seconds": [
+    0.3707995,
+    0.3302656,
+    0.4204411
+  ],
+  "median_kernel_speedup": 34.03899331039001,
+  "identical_core_text": true,
+  "text_sha256": "a43fe958a425bf28ad047695c27e6dbbc2cc3668dad61c7575d80fbebbd7a42f",
+  "scope": "Single-thread recovery only; three warm runs; no network, parsing, disk or upstream cleanup. Rust retains unmerged fragments."
+}

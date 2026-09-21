@@ -1,0 +1,33 @@
+{
+  "raw_sha256": "4b73eed6c10471fa8c05e2eca4d403be66ba5d94c93f195fe4746ceabc4d49bb",
+  "articles_sha256": "78aeab4c1e82e9f2fb98835600b2121ec54a3634bb088cfdda0ef0fd3f11f455",
+  "type2_observations": 190,
+  "language_observations": {
+    "zh": 147,
+    "zh-TW": 17,
+    "ja": 26
+  },
+  "input_fragments": 223797,
+  "merged_fragments": 189319,
+  "unmerged_fragments": 34478,
+  "recovered_codepoints": 216417,
+  "residual_segments": 179,
+  "residual_segment_codepoints": 44822,
+  "search_statuses": {
+    "not_needed": 178,
+    "budget_exhausted": 6,
+    "no_complete_assembly": 5,
+    "unique_complete_assembly": 1
+  },
+  "search_steps": 135302,
+  "stop_reasons": {
+    "all_fragments_merged": 168,
+    "no_confident_overlap": 11,
+    "ambiguous_continuation": 11
+  },
+  "all_fragments_accounted_for": true,
+  "all_placed_fragments_present_in_text": true,
+  "all_fragments_assigned_to_exactly_one_section": true,
+  "all_segment_fragments_present_in_segment_text": true,
+  "scope": "Source evidence checks; not a publisher-ground-truth accuracy measurement"
+}
