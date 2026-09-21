@@ -18,4 +18,4 @@ RUN python -m unittest discover -s scripts -p 'test_*.py' && mkdir /data && chow
 ARG CODE_REVISION=unknown
 ENV GDELT_CODE_REVISION=$CODE_REVISION
 USER 10001:10001
-ENTRYPOINT ["python", "/app/scripts/worker.py"]
+ENTRYPOINT ["python", "/app/scripts/compact_worker.py"]

@@ -21,7 +21,7 @@ services:
     volumes:
       - /srv/gdelt-news/data:/data
       - /srv/gdelt-news/secrets/hf_token:/run/secrets/hf_token:ro
-    command: ["--repo", "openalphalab/gdelt-news", "--start", "20200101000100", "--threads", "4", "--max-expanded-mib", "4096", "--max-download-mib", "1024", "--max-fragments", "16000000"]
+    command: ["--repo", "openalphalab/gdelt-news", "--start", "20200101000100", "--threads", "4", "--max-expanded-mib", "4096", "--max-download-mib", "1024", "--max-fragments", "16000000", "--lag-minutes", "1", "--poll-seconds", "30", "--max-hub-storage-gb", "7000"]
     logging:
       driver: json-file
       options:
