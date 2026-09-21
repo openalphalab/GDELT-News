@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -52,10 +53,23 @@ def atomic(path, body):
             stream.write(body)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(tmp, path)
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows scanners can briefly hold a just-written file open.
+                # Never suppress a persistent permissions failure.
+                if os.name != "nt" or attempt == 7:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     finally:
         if os.path.exists(tmp):
-            os.unlink(tmp)
+            try:
+                os.unlink(tmp)
+            except PermissionError:
+                # Preserve the original exception if a scanner still owns it.
+                pass
 
 
 def dump(path, value, pretty=False):

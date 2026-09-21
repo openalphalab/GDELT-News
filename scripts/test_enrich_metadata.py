@@ -9,10 +9,24 @@ from unittest.mock import patch
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 
-from enrich_metadata import Suffixes, bounded_lines, build, choose_country, dataset_urls, fetch, time_distance
+from enrich_metadata import Suffixes, atomic, bounded_lines, build, choose_country, dataset_urls, fetch, time_distance
 
 
 class MetadataTests(unittest.TestCase):
+    def test_atomic_publication_recovers_from_transient_windows_file_lock(self):
+        import os
+        replace = os.replace
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "checkpoint.json"
+            def locked_once(source, destination):
+                if not getattr(locked_once, "tried", False):
+                    locked_once.tried = True
+                    raise PermissionError("temporary scanner lock")
+                return replace(source, destination)
+            with patch("enrich_metadata.os.name", "nt"), patch("enrich_metadata.os.replace", side_effect=locked_once), patch("enrich_metadata.time.sleep"):
+                atomic(path, b"verified data")
+            self.assertEqual(path.read_bytes(), b"verified data")
+
     def setUp(self):
         self.psl = Suffixes(["com", "uk", "co.uk", "cn", "com.cn", "blogspot.com", "*.ck", "!www.ck"])
 
