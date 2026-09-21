@@ -1,5 +1,10 @@
 # GDELT Type 1 and Type 2 news recovery
 
+**Public dataset:** [openalphalab/gdelt-news on Hugging Face](https://huggingface.co/datasets/openalphalab/gdelt-news)
+contains published reconstruction shards, compact JSONL, raw evidence and a live
+coverage checkpoint. See the dataset card for schemas and download examples, and
+[deploy/README.md](deploy/README.md) for the resumable Linux backfill worker.
+
 A Rust collector and reconstruction library based on [Fronzetti Colladon and
 Vestrelli (2026)](https://www.mdpi.com/2504-2289/10/2/45) and
 [gdeltnews](https://github.com/iandreafc/gdeltnews). The published paper is also
