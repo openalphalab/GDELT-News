@@ -1,15 +1,23 @@
 # Persistent Alibaba deployment
 
 Run this worker on Linux with Docker and the Docker Compose plugin. It needs no
-inbound network port. It uses up to 3 CPUs and 8 GiB memory, keeps a 12 GiB disk
+inbound network port. It uses up to 4 CPUs and 12 GiB memory, keeps a 12 GiB disk
 reserve, and stores at most one unpublished batch plus its verified caches.
 The server's existing operating system need not be replaced.
 
 Historical source minutes can exceed the CLI's conservative default input size.
-The VM worker allows 512 MiB compressed / 2 GiB expanded and eight million total
-fragments per minute, while retaining the per-observation and bounded-search
+The supplied Compose configuration allows 1 GiB compressed / 4 GiB expanded and
+sixteen million total fragments per minute, while retaining the per-observation and bounded-search
 limits. These limits are explicit CLI options; larger inputs stop the checkpoint
 for investigation rather than being skipped or silently truncated.
+
+Input byte limits are not RAM allocations. Parsing, indexes, reconstruction and
+serialization also use memory. The 12 GiB container ceiling leaves roughly 3 GiB
+for Linux, Docker and host services on this VM, whose kernel exposes about 14.8 GiB.
+All four CPU cores are available; actual usage depends on the current download,
+parsing, reconstruction or upload stage. The 512 MiB `/tmp` mount is a separate
+temporary-file ceiling; downloads, evidence and upload caches use `/data` on disk.
+The standalone worker defaults remain smaller for other deployment environments.
 
 Provision the public Hugging Face dataset `openalphalab/gdelt-news` and create a
 fine-grained token granting write access only to that dataset. Keep it out of Git,
