@@ -1,0 +1,2 @@
+huggingface_hub==1.32.0
+pyarrow==25.0.1

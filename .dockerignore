@@ -3,3 +3,8 @@ data
 .git
 **/__pycache__
 *.pyc
+.venv
+secrets
+state
+.env
+.env.*

@@ -1,0 +1,29 @@
+services:
+  collector:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+      args:
+        CODE_REVISION: ${GDELT_CODE_REVISION:-unknown}
+    image: gdelt-news-worker:local
+    restart: unless-stopped
+    init: true
+    cpus: 3.0
+    mem_limit: 8g
+    pids_limit: 256
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    volumes:
+      - /srv/gdelt-news/data:/data
+      - /srv/gdelt-news/secrets/hf_token:/run/secrets/hf_token:ro
+    command: ["--repo", "openalphalab/gdelt-news", "--start", "20200101000100", "--threads", "3"]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
