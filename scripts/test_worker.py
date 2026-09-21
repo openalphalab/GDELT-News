@@ -57,6 +57,7 @@ class WorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             batch = Path(directory) / "batch"
             record = publication(batch)
+            record["quarantined_metadata_records"] = 3
             hub = FakeHub()
             hub.fail_response = True
             with self.assertRaises(ConnectionError):
@@ -65,6 +66,7 @@ class WorkerTests(unittest.TestCase):
             progress, revision = worker.publish(hub, batch, record, worker.FIRST)
             self.assertEqual(hub.uploads, 1)
             self.assertEqual(progress["total_observations"], 7)
+            self.assertEqual(progress["total_quarantined_metadata_records"], 3)
             self.assertEqual(revision, "uploaded")
 
     def test_verification_failure_keeps_pending_data(self):
@@ -154,6 +156,51 @@ class WorkerTests(unittest.TestCase):
                     worker.build_batch(args, worker.FIRST, worker.FIRST)
             self.assertFalse((args.state / "batch/ready.json").exists())
             self.assertTrue((args.state / "batch/request.json").exists())
+
+    def test_profile_selection_and_quarantine_evidence_survive_batch_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = SimpleNamespace(state=root, collector="collector", exporter="exporter", threads=1,
+                                   min_free_gib=12, shard_gib=4, max_expanded_mib=2048,
+                                   max_download_mib=512, max_fragments=8_000_000)
+            evidence_bytes = gzip.compress(b'{"source_line":1,"reasons":["missing_url"]}\n')
+            def fake_run(command):
+                if command[0] == "exporter":
+                    Path(command[command.index("--output-directory") + 1]).mkdir()
+                    return
+                archive = root / "batch/archive"
+                run_dir = archive / "runs/current"
+                worker.write_json(run_dir / "request.json", {"profile": "current"})
+                worker.write_json(run_dir / "summary.json", {"completed": 1, "missing": 0, "failed": 0})
+                worker.write_json(run_dir / (worker.FIRST + ".json"), {"status": "complete"})
+                raw = archive / "raw/2020/01/01" / (worker.FIRST + ".webngrams.json.gz")
+                raw.parent.mkdir(parents=True)
+                raw.write_bytes(gzip.compress(b'{"url":""}\n'))
+                sha = worker.enrich.digest(raw)
+                profile_dir = archive / "articles/current"
+                profile_dir.mkdir(parents=True)
+                articles, quarantine = profile_dir / "articles.gz", profile_dir / "quarantine.gz"
+                articles.write_bytes(gzip.compress(b""))
+                quarantine.write_bytes(evidence_bytes)
+                worker.write_json(profile_dir / (sha + ".manifest.json"), {
+                    "profile": "current", "raw": {"sha256": sha},
+                    "output": str(articles.relative_to(archive)), "output_sha256": worker.enrich.digest(articles),
+                    "quarantine": {"path": str(quarantine.relative_to(archive)),
+                                   "sha256": worker.enrich.digest(quarantine), "records": 1}})
+                worker.write_json(archive / "articles/stale" / (sha + ".manifest.json"), {"profile": "stale"})
+            def fake_enrich(source, cache, output, minute):
+                output.mkdir()
+                observations = output / "observations.enriched.jsonl"
+                observations.write_text('{"meta":{}}\n')
+                worker.write_json(output / "enrichment-report.json", {
+                    "source_files": [], "observations": 0,
+                    "files": [{"name": observations.name, "sha256": worker.enrich.digest(observations)}]})
+            with patch("worker.run", side_effect=fake_run), patch("worker.enrich.build", side_effect=fake_enrich), patch("worker.check_space"):
+                record = worker.build_batch(args, worker.FIRST, worker.FIRST)
+            self.assertEqual(record["observations"], 0)
+            self.assertEqual(record["quarantined_metadata_records"], 1)
+            with tarfile.open(root / "batch/evidence.tar") as archive:
+                self.assertEqual(archive.extractfile(f"minutes/{worker.FIRST}/quarantine.jsonl.gz").read(), evidence_bytes)
 
 
 if __name__ == "__main__":

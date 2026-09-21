@@ -46,6 +46,7 @@ pub struct Settings {
     pub languages: Vec<String>,
     pub domains: Vec<String>,
     pub strip_artifacts: bool,
+    pub quarantine_invalid_metadata: bool,
     pub max_expanded_bytes: u64,
     pub max_line_bytes: u64,
     pub max_fragments: usize,
@@ -184,6 +185,15 @@ pub struct Counts {
     pub expanded_bytes: u64,
     pub best_effort_articles: u64,
     pub position_only_joins: u64,
+    pub quarantined_metadata_records: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Quarantine {
+    #[serde(serialize_with = "portable_path")]
+    pub path: PathBuf,
+    pub sha256: String,
+    pub records: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -196,6 +206,8 @@ pub struct Manifest {
     pub output_sha256: String,
     pub counts: Counts,
     pub elapsed_seconds: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<Quarantine>,
 }
 
 #[derive(Serialize)]
@@ -250,6 +262,9 @@ pub fn process(root: &Path, raw: Raw, settings: &Settings) -> Result<(Counts, bo
         && m.profile == profile
         && m.raw.sha256 == raw.sha256
         && m.output_sha256 == file_digest(&output)?
+        && m.quarantine
+            .as_ref()
+            .is_none_or(|q| file_digest(&root.join(&q.path)).is_ok_and(|sha| sha == q.sha256))
     {
         return Ok((m.counts, true));
     }
@@ -262,6 +277,8 @@ pub fn process(root: &Path, raw: Raw, settings: &Settings) -> Result<(Counts, bo
     };
     let mut reader = BufReader::with_capacity(128 * 1024, reader);
     let mut counts = Counts::default();
+    let mut quarantine_temp = NamedTempFile::new_in(&directory)?;
+    let mut quarantine_writer = GzEncoder::new(quarantine_temp.as_file_mut(), Compression::fast());
     // Separate observations of a changing URL and different languages.
     let mut groups: BTreeMap<(String, String, String, u8), Vec<Fragment>> = BTreeMap::new();
     let mut line = Vec::with_capacity(4096);
@@ -309,15 +326,39 @@ pub fn process(root: &Path, raw: Raw, settings: &Settings) -> Result<(Counts, bo
             }
             continue;
         }
-        ensure!(
-            !entry.url.is_empty()
-                && !entry.date.is_empty()
-                && !entry.lang.is_empty()
-                && entry.pos <= 90
-                && entry.pos.is_multiple_of(10),
-            "invalid metadata on line {}",
-            counts.lines
-        );
+        let mut reasons = Vec::new();
+        if entry.url.trim().is_empty() {
+            reasons.push("missing_url");
+        }
+        if entry.date.trim().is_empty() {
+            reasons.push("missing_date");
+        }
+        if entry.lang.trim().is_empty() {
+            reasons.push("missing_language");
+        }
+        if entry.pos > 90 || !entry.pos.is_multiple_of(10) {
+            reasons.push("invalid_position");
+        }
+        if !reasons.is_empty() {
+            ensure!(
+                settings.quarantine_invalid_metadata,
+                "invalid metadata on line {}: {}",
+                counts.lines,
+                reasons.join(",")
+            );
+            // Missing identity must never combine unrelated fragments into one article.
+            // Preserve the record and its original line number for explicit repair.
+            serde_json::to_writer(
+                &mut quarantine_writer,
+                &serde_json::json!({
+                    "source_line": counts.lines, "reasons": reasons,
+                    "record": serde_json::from_slice::<serde_json::Value>(&line)?
+                }),
+            )?;
+            quarantine_writer.write_all(b"\n")?;
+            counts.quarantined_metadata_records += 1;
+            continue;
+        }
         if !settings.languages.is_empty()
             && !settings
                 .languages
@@ -381,6 +422,21 @@ pub fn process(root: &Path, raw: Raw, settings: &Settings) -> Result<(Counts, bo
         );
         fragments.push(fragment);
     }
+    quarantine_writer.finish()?;
+    let quarantine = if counts.quarantined_metadata_records > 0 {
+        quarantine_temp.as_file().sync_all()?;
+        let sha256 = file_digest(quarantine_temp.path())?;
+        let path = directory.join(format!("{}.quarantine.jsonl.gz", raw.sha256));
+        quarantine_temp.persist(&path)?;
+        sync_directory(&directory)?;
+        Some(Quarantine {
+            path: path.strip_prefix(root)?.into(),
+            sha256,
+            records: counts.quarantined_metadata_records,
+        })
+    } else {
+        None
+    };
     let mut temp = NamedTempFile::new_in(&directory)?;
     {
         let gz = GzEncoder::new(temp.as_file_mut(), Compression::fast());
@@ -460,6 +516,7 @@ pub fn process(root: &Path, raw: Raw, settings: &Settings) -> Result<(Counts, bo
         raw,
         counts,
         elapsed_seconds: started.elapsed().as_secs_f64(),
+        quarantine,
     };
     atomic_json(&manifest_path, &manifest)?;
     Ok((manifest.counts, false))

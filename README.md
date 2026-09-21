@@ -44,6 +44,14 @@ published slots vary. A 404 is recorded as missing and retried on the next
 invocation. A 403, exhausted retry or processing error counts as failed and
 causes a nonzero exit status. Future or non-minute timestamps are rejected.
 
+By default invalid metadata also fails the file. For historical collection,
+`--quarantine-invalid-metadata` preserves records with missing URL/date/language or
+invalid position deciles in a checksummed `.quarantine.jsonl.gz` sidecar and
+continues with valid observations. The sidecar records the original line number,
+rejection reasons and input record; exact raw bytes remain unchanged. This avoids
+merging unrelated fragments under an empty URL. The deployed worker enables this
+mode, archives the sidecar, and reports quarantine counts separately from articles.
+
 Filters and concurrency:
 
 ```sh

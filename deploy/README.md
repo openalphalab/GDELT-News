@@ -19,6 +19,12 @@ parsing, reconstruction or upload stage. The 512 MiB `/tmp` mount is a separate
 temporary-file ceiling; downloads, evidence and upload caches use `/data` on disk.
 The standalone worker defaults remain smaller for other deployment environments.
 
+The worker enables `--quarantine-invalid-metadata`: fragments with missing identity
+or invalid deciles are preserved with source line numbers and reasons in a
+checksummed evidence sidecar. They never become anonymous merged articles. Batch
+manifests and the remote checkpoint count them separately from valid observations.
+Malformed JSON, gzip corruption and exceeded resource limits still fail visibly.
+
 Provision the public Hugging Face dataset `openalphalab/gdelt-news` and create a
 fine-grained token granting write access only to that dataset. Keep it out of Git,
 command history, images and logs. Use an interactive hidden prompt on the VM:

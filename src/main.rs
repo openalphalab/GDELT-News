@@ -52,6 +52,9 @@ struct Cli {
     /// Retain the early Type 1 " / " artifact. Type 2 never applies this heuristic.
     #[arg(long, global = true)]
     keep_artifacts: bool,
+    /// Preserve records with missing identity/invalid positions in a quarantine sidecar.
+    #[arg(long, global = true)]
+    quarantine_invalid_metadata: bool,
     /// Number of CPU threads; 0 uses available parallelism.
     #[arg(long, global = true, default_value_t = 0)]
     threads: usize,
@@ -111,6 +114,7 @@ struct Summary {
     selected_fragments: u64,
     type2_skipped: u64,
     type1_skipped: u64,
+    quarantined_metadata_records: u64,
     elapsed_seconds: f64,
 }
 
@@ -149,6 +153,13 @@ fn handle(
     summary.selected_fragments += counts.selected_fragments;
     summary.type2_skipped += counts.type2_skipped;
     summary.type1_skipped += counts.type1_skipped;
+    summary.quarantined_metadata_records += counts.quarantined_metadata_records;
+    if counts.quarantined_metadata_records > 0 {
+        eprintln!(
+            "{}: {} metadata-invalid records preserved in quarantine",
+            name, counts.quarantined_metadata_records
+        );
+    }
     eprintln!(
         "{}: {} Type 1 and {} Type 2 observations, {} ambiguous{}",
         name,
@@ -220,6 +231,7 @@ fn run(cli: Cli) -> Result<()> {
             .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
             .collect(),
         strip_artifacts: !cli.keep_artifacts,
+        quarantine_invalid_metadata: cli.quarantine_invalid_metadata,
         max_expanded_bytes: cli.max_expanded_mib * 1024 * 1024,
         max_line_bytes: 1024 * 1024,
         max_fragments: cli.max_fragments,
@@ -281,7 +293,7 @@ fn run(cli: Cli) -> Result<()> {
             atomic_json(
                 &run_dir.join("request.json"),
                 &serde_json::json!({"start":start,"end":end,
-                "downloads":downloads,"settings":settings,"base_url":base_url}),
+                "downloads":downloads,"settings":settings,"profile":archive::profile(&settings),"base_url":base_url}),
             )?;
             let next = AtomicI64::new(0);
             let count = (end - start).num_minutes() + 1;

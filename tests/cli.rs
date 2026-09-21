@@ -85,7 +85,10 @@ fn outputs(root: &Path) -> Vec<std::path::PathBuf> {
     for profile in fs::read_dir(root.join("articles")).unwrap() {
         for entry in fs::read_dir(profile.unwrap().path()).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().is_some_and(|e| e == "gz") {
+            if path
+                .file_name()
+                .is_some_and(|e| e.to_string_lossy().ends_with(".articles.jsonl.gz"))
+            {
                 files.push(path);
             }
         }
@@ -198,6 +201,85 @@ fn rejects_corruption_and_malformed_input_without_completed_output() {
             .success()
     );
     assert!(outputs(&root).is_empty());
+}
+
+#[test]
+fn quarantines_missing_identity_without_fusing_articles_and_verifies_sidecar_cache() {
+    let temp = TempDir::new().unwrap();
+    let input = temp.path().join("input.json");
+    let good = record(
+        1,
+        "https://example.com/valid",
+        "2020-01-01T00:17:00Z",
+        "",
+        "valid",
+        "story",
+    );
+    let orphan = record(1, "", "2020-01-01T00:17:00Z", "", "unidentified", "story");
+    let mut bad_position: Value = serde_json::from_str(&good).unwrap();
+    bad_position["pos"] = json!(91);
+    let data = format!("{good}{orphan}{orphan}{bad_position}\n");
+    fs::write(&input, &data).unwrap();
+    let root = temp.path().join("archive");
+    let args = ["reconstruct", "--input", input.to_str().unwrap()];
+    assert!(!run(&root, &args).status.success());
+    assert!(outputs(&root).is_empty());
+    let args = [
+        "reconstruct",
+        "--input",
+        input.to_str().unwrap(),
+        "--quarantine-invalid-metadata",
+    ];
+    let first = run(&root, &args);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let summary: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(summary["quarantined_metadata_records"], 3);
+    let rows = articles(&root);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["text"], "valid story");
+    let output = outputs(&root).remove(0);
+    let manifest_path = output.with_file_name(
+        output
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace(".articles.jsonl.gz", ".manifest.json"),
+    );
+    let manifest: Value = serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
+    let sidecar = root.join(manifest["quarantine"]["path"].as_str().unwrap());
+    let mut text = String::new();
+    MultiGzDecoder::new(fs::File::open(&sidecar).unwrap())
+        .read_to_string(&mut text)
+        .unwrap();
+    let rejected: Vec<Value> = text
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(rejected.len(), 3);
+    assert_eq!(rejected[0]["source_line"], 2);
+    assert_eq!(rejected[0]["reasons"], json!(["missing_url"]));
+    assert_eq!(
+        rejected[0]["record"],
+        serde_json::from_str::<Value>(&orphan).unwrap()
+    );
+    assert_eq!(rejected[2]["reasons"], json!(["invalid_position"]));
+    assert_eq!(
+        fs::read(root.join(manifest["raw"]["path"].as_str().unwrap())).unwrap(),
+        data.as_bytes()
+    );
+    let cached: Value = serde_json::from_slice(&run(&root, &args).stdout).unwrap();
+    assert_eq!(cached["cached"], 1);
+    fs::write(&sidecar, b"corrupt").unwrap();
+    let repaired = run(&root, &args);
+    assert!(repaired.status.success());
+    let repaired: Value = serde_json::from_slice(&repaired.stdout).unwrap();
+    assert_eq!(repaired["cached"], 0);
+    assert_eq!(repaired["quarantined_metadata_records"], 3);
 }
 
 struct Server {

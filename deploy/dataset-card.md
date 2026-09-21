@@ -46,6 +46,8 @@ The exported `text` contains the best available assembly of the observed fragmen
 
 A URL may occur more than once across times or source files. Those observations are deliberately retained rather than treated as distinct verified articles or silently deduplicated. Language coverage follows the source files; the presence or absence of a language in a particular batch is not a coverage guarantee. `observed_at` is GDELT's observation time, not the original publication time.
 
+Some upstream fragments have an empty URL, date or language, or an invalid position decile. The deployed worker quarantines these records rather than merging unidentified fragments into fabricated articles. Valid observations from the same minute are still published. Inside its evidence TAR, `minutes/MINUTE/quarantine.jsonl.gz` preserves each rejected record with its original `source_line` and `reasons`; the reconstruction manifest includes its checksum. Batch manifests list `quarantined_metadata` counts by minute, and `progress.json` accumulates `total_quarantined_metadata_records`. These are fragment counts, not article counts, and they are excluded from `total_observations`. Older batches without these fields predate this handling. The original source bytes always remain available for repair. Malformed JSON, truncated gzip and resource-limit violations still halt processing for investigation.
+
 ## Repository layout
 
 | Path | Contents | Intended use |

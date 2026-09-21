@@ -132,6 +132,7 @@ def build_batch(args, start, maximum_end):
     archive.mkdir(exist_ok=True)
     cache = args.state / "cache"
     minute, observations, outcomes, added = start, 0, [], set()
+    quarantined = []
     parquet_path, evidence_path, llm_path = (batch / x for x in
                                            ("observations.parquet", "evidence.tar", "observations.jsonl.gz"))
     # Rebuild only uncommitted aggregate files after a crash; cached minute
@@ -149,7 +150,7 @@ def build_batch(args, start, maximum_end):
         while minute <= maximum_end:
             check_space(args.state, args.min_free_gib)
             run([args.collector, "--archive", archive, "--types", "1,2",
-                 "--type2-best-effort", "--threads", args.threads,
+                 "--type2-best-effort", "--quarantine-invalid-metadata", "--threads", args.threads,
                  "--max-expanded-mib", args.max_expanded_mib, "--max-fragments", args.max_fragments,
                  "collect", "--start", minute, "--end", minute,
                  "--downloads", "1", "--min-free-gib", args.min_free_gib,
@@ -167,15 +168,16 @@ def build_batch(args, start, maximum_end):
             else:
                 raw = archive / "raw" / minute[:4] / minute[4:6] / minute[6:8] / (minute + ".webngrams.json.gz")
                 raw_sha = enrich.digest(raw)
-                matches = list((archive / "articles").glob(f"*/{raw_sha}.manifest.json"))
-                if len(matches) != 1:
-                    raise RuntimeError("Expected one reconstruction manifest")
-                manifest = read_json(matches[0])
+                profile = read_json(latest / "request.json")["profile"]
+                manifest_path = archive / "articles" / profile / f"{raw_sha}.manifest.json"
+                manifest = read_json(manifest_path)
+                if manifest["profile"] != profile:
+                    raise RuntimeError("Reconstruction profile mismatch")
                 articles = archive / manifest["output"]
                 if manifest["raw"]["sha256"] != raw_sha or enrich.digest(articles) != manifest["output_sha256"]:
                     raise RuntimeError("Reconstruction checksum mismatch")
-                exported = batch / ("export-" + minute)
-                enriched = batch / ("enriched-" + minute)
+                exported = batch / ("export-" + minute + "-" + profile)
+                enriched = batch / ("enriched-" + minute + "-" + profile)
                 if not exported.exists():
                     run([args.exporter, "--articles", articles, "--output-directory", exported])
                 if not enriched.exists():
@@ -194,7 +196,14 @@ def build_batch(args, start, maximum_end):
                 if enrich.digest(input_path) != expected:
                     raise RuntimeError("Enriched observation checksum mismatch")
                 preserve(raw, f"raw/{minute}.webngrams.json.gz")
-                preserve(matches[0], f"minutes/{minute}/reconstruction-manifest.json")
+                preserve(manifest_path, f"minutes/{minute}/reconstruction-manifest.json")
+                if manifest.get("quarantine"):
+                    rejected = manifest["quarantine"]
+                    path = archive / rejected["path"]
+                    if enrich.digest(path) != rejected["sha256"]:
+                        raise RuntimeError("Quarantine evidence checksum mismatch")
+                    preserve(path, f"minutes/{minute}/quarantine.jsonl.gz")
+                    quarantined.append({"minute": minute, "records": rejected["records"]})
                 preserve(articles, f"minutes/{minute}/articles.jsonl.gz")
                 preserve(enriched / "enrichment-report.json", f"minutes/{minute}/enrichment-report.json")
                 for source in report["source_files"]:
@@ -244,6 +253,8 @@ def build_batch(args, start, maximum_end):
               "next_minute": successor(minute), "observations": observations,
               "code_revision": os.environ.get("GDELT_CODE_REVISION", "unknown"),
               "missing_minutes": [x["minute"] for x in outcomes if x["status"] == "missing"],
+              "quarantined_metadata": quarantined,
+              "quarantined_metadata_records": sum(x["records"] for x in quarantined),
               "minutes": len(outcomes), "files": files}
     write_json(manifest_path, record)
     record["files"] = files + [{**file_record(manifest_path, f"manifests/{prefix}.json"), "local": "manifest.json"}]
@@ -321,6 +332,7 @@ def publish(hub, batch, record, initial_start):
                 "next_minute": record["next_minute"], "last_end": record["end"],
                 "last_manifest": manifest["path"], "last_manifest_sha256": manifest["sha256"],
                 "total_observations": (remote or {}).get("total_observations", 0) + record["observations"],
+                "total_quarantined_metadata_records": (remote or {}).get("total_quarantined_metadata_records", 0) + record.get("quarantined_metadata_records", 0),
                 "published_bytes": (remote or {}).get("published_bytes", 0) + sum(x["bytes"] for x in record["files"]),
                 "updated_at": datetime.now(timezone.utc).isoformat()}
     revision = hub.commit(batch, record, progress, parent)
