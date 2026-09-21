@@ -5,6 +5,12 @@ inbound network port. It uses up to 3 CPUs and 8 GiB memory, keeps a 12 GiB disk
 reserve, and stores at most one unpublished batch plus its verified caches.
 The server's existing operating system need not be replaced.
 
+Historical source minutes can exceed the CLI's conservative default input size.
+The VM worker allows 512 MiB compressed / 2 GiB expanded and eight million total
+fragments per minute, while retaining the per-observation and bounded-search
+limits. These limits are explicit CLI options; larger inputs stop the checkpoint
+for investigation rather than being skipped or silently truncated.
+
 Provision the public Hugging Face dataset `openalphalab/gdelt-news` and create a
 fine-grained token granting write access only to that dataset. Keep it out of Git,
 command history, images and logs. Use an interactive hidden prompt on the VM:

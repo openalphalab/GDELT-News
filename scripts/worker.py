@@ -150,8 +150,10 @@ def build_batch(args, start, maximum_end):
             check_space(args.state, args.min_free_gib)
             run([args.collector, "--archive", archive, "--types", "1,2",
                  "--type2-best-effort", "--threads", args.threads,
+                 "--max-expanded-mib", args.max_expanded_mib, "--max-fragments", args.max_fragments,
                  "collect", "--start", minute, "--end", minute,
-                 "--downloads", "1", "--min-free-gib", args.min_free_gib])
+                 "--downloads", "1", "--min-free-gib", args.min_free_gib,
+                 "--max-download-mib", args.max_download_mib])
             runs = sorted((archive / "runs").iterdir())
             latest = runs[-1]
             summary = read_json(latest / "summary.json")
@@ -337,15 +339,21 @@ def main():
     parser.add_argument("--lag-hours", type=int, default=48)
     parser.add_argument("--min-free-gib", type=int, default=12)
     parser.add_argument("--threads", type=int, default=3)
+    parser.add_argument("--max-expanded-mib", type=int, default=2048)
+    parser.add_argument("--max-download-mib", type=int, default=512)
+    parser.add_argument("--max-fragments", type=int, default=8_000_000)
     parser.add_argument("--collector", default="gdelt-type1")
     parser.add_argument("--exporter", default="gdelt-export")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     parse_minute(args.start)
     if not (1 <= args.batch_minutes <= 1440 and 0.01 <= args.shard_gib <= 8
-            and args.lag_hours >= 48 and args.min_free_gib >= 8 and 1 <= args.threads <= 16):
+            and args.lag_hours >= 48 and args.min_free_gib >= 8 and 1 <= args.threads <= 16
+            and 512 <= args.max_expanded_mib <= 8192 and 128 <= args.max_download_mib <= 2048
+            and 2_000_000 <= args.max_fragments <= 16_000_000):
         parser.error("Invalid resource settings; lag must be >=48 hours for retrospective daily enrichment")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     args.state.mkdir(parents=True, exist_ok=True)
     # Linux deployment lock covers collection, publication and cleanup.
     import fcntl

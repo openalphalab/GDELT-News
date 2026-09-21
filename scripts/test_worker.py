@@ -126,7 +126,8 @@ class WorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = SimpleNamespace(state=root, collector="collector", exporter="exporter", threads=1,
-                                   min_free_gib=12, shard_gib=4)
+                                   min_free_gib=12, shard_gib=4, max_expanded_mib=2048,
+                                   max_download_mib=512, max_fragments=8_000_000)
             def fake_collect(command):
                 run_dir = root / "batch/archive/runs/20260921"
                 run_dir.mkdir(parents=True)
@@ -146,7 +147,8 @@ class WorkerTests(unittest.TestCase):
 
     def test_source_failure_never_becomes_ready_or_advances(self):
         with tempfile.TemporaryDirectory() as directory:
-            args = SimpleNamespace(state=Path(directory), collector="collector", threads=1, min_free_gib=12)
+            args = SimpleNamespace(state=Path(directory), collector="collector", threads=1, min_free_gib=12,
+                                   max_expanded_mib=2048, max_download_mib=512, max_fragments=8_000_000)
             with patch("worker.check_space"), patch("worker.run", side_effect=RuntimeError("HTTP 503")):
                 with self.assertRaisesRegex(RuntimeError, "503"):
                     worker.build_batch(args, worker.FIRST, worker.FIRST)
