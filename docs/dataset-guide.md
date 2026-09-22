@@ -6,7 +6,7 @@ Multilingual news observations reconstructed from **both Type 1 and Type 2** GDE
 
 ## Coverage and status
 
-Historical coverage extends toward **2020-01-01 00:01 UTC**, the earliest file documented by GDELT. **The full historical archive has not yet been published.** Recent data and previously uploaded 2020 data can both be present while dates between them are still missing. Read `progress.json` for the separate live and backward cursors and published row count. A processed interval can contain gaps: source HTTP 404s are recorded in batch manifests, not invented as news.
+Historical coverage extends toward **2020-01-01 00:01 UTC**, the earliest file documented by GDELT. **The full historical archive has not yet been published.** Recent data and previously uploaded 2020 data can both be present while dates between them are still missing. Read `progress.json` for the separate live and backward cursors and published row count. A processed interval can contain gaps; an unavailable source never becomes invented news.
 
 The persistent Alibaba VM gives **recent files priority** and works **backward through history** between live batches. **There is no 48-hour enrichment delay, and current news does not wait for the historical backfill.** The worker uses a **one-minute safety margin**, checks live work before each backward chunk and polls every **30 seconds** when idle. One coordinator reconstructs one input at a time and publishes atomically, with independent progress and retry state for live, historical and late-file work. Actual latency includes upstream publication, the current work unit, download, reconstruction and upload time; it is not a guaranteed one-minute delivery service.
 
@@ -27,14 +27,14 @@ The checkpoint fields mean:
 | `total_observations` | Total published Parquet rows, including successfully repaired late files |
 | `pending_missing_minutes` | Recent missing minutes awaiting retry; entries expire after the retry window |
 | `last_action` | `live`, `backfill` or a late-file `repair`; older checkpoints use `forward` |
-| `last_manifest` | Manifest for the most recent publication, which may be a repair |
+| `last_manifest` | Latest available manifest for a batch containing rows, which may be a repair; can be null |
 | `published_bytes` | Published artifact bytes on the current branch, not total storage across Git history |
 | `total_quarantined_metadata_records` | Source fragments excluded for invalid/missing identity or position metadata; not an article count |
 | `updated_at` | Time the public checkpoint was updated |
 
 Files appear after a verified batch commit. The Hub does not show the VM's in-flight transfer percentage. Refresh the files page or checkpoint to see new publications; the dataset viewer can update later than the files.
 
-**No rows means no Parquet upload.** An empty or missing interval updates only its small coverage manifest and checkpoint. Missing recent files remain eligible for late-file retries. Repeated missing-file probes and idle 30-second polls do not create duplicate data. A timestamp can therefore be recorded in a coverage manifest without a corresponding Parquet shard.
+**No rows means no Parquet or manifest file.** An empty or missing interval updates only the shared `progress.json` checkpoint. Missing recent timestamps remain eligible for late-file retries for 24 hours. Repeated missing-file probes and idle 30-second polls do not create duplicate data. Empty-only intervals do not retain individual public manifests; mixed batches with actual rows still include their source-minute outcomes in their manifests.
 
 ## Schema
 

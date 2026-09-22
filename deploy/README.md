@@ -99,7 +99,7 @@ and remote `progress.json` for actual progress and errors. `live_next_minute` is
 the next new source minute; `backfill_next_end` is the newest still-unprocessed
 historical minute. Backfill is complete when it is less than `backfill_floor`.
 
-Each publication atomically commits Parquet, a small manifest and the remote
+Each nonempty publication atomically commits Parquet, a small manifest and the remote
 checkpoint. Local scratch is removed only after remote hashes are verified. A
 lost upload response or power failure retries the same immutable batch. Failed
 downloads, corrupt inputs, full disks, authentication failures and storage quota
@@ -109,12 +109,16 @@ per absent file. Successful late arrivals are separate `-late` Parquet shards an
 never rewind the forward cursor. Repeated 404 probes do not create remote commits.
 Older gaps and arrivals beyond the retry window need a separate repair run.
 
-A new source interval with zero rows publishes only its small coverage manifest
-and checkpoint, never an empty Parquet shard. This applies to missing files and
-valid inputs containing no reconstructable observations. Missing recent files
-remain in the durable retry queue; valid zero-row inputs retain their provenance
-and quarantine counts. Rechecking an absent file does not publish another commit,
-and idle 30-second polls do not recollect already-processed live minutes.
+A new source interval with zero rows updates only the shared `progress.json`:
+no Parquet and no per-batch manifest is uploaded. This applies to missing files
+and valid inputs containing no reconstructable observations. A temporary local
+receipt is checksummed for restart recovery and removed after the exact remote
+checkpoint is verified. Missing recent timestamps stay in the checkpoint retry
+queue, and aggregate quarantine counts remain available. Older empty-only gaps
+do not retain individual public receipts. Rechecking an absent file does not
+publish another commit, and idle 30-second polls do not recollect already-processed
+live minutes. `lane_commits.*.path` is null for checkpoint-only acknowledgements;
+`last_manifest` refers to the latest available nonempty manifest, when present.
 
 All compact history is retained. Before collection and upload, the worker checks
 the dataset's reported `usedStorage`, stopping new uploads if usage plus twice the

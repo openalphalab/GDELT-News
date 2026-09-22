@@ -283,6 +283,8 @@ class Hub:
             return None, info.sha
 
     def verify(self, files, revision):
+        if not files:
+            return
         remote = {x.path: x for x in self.api.get_paths_info(self.repo, [x["path"] for x in files],
                                                            repo_type="dataset", revision=revision)}
         for item in files:
@@ -309,6 +311,9 @@ class Hub:
         result = self.api.create_commit(self.repo, repo_type="dataset", operations=ops,
                                        parent_commit=parent,
                                        commit_message=f"GDELT {record['start']} through {record['end']}")
+        # Checkpoint-only commits have no data artifacts to verify. Confirm the
+        # exact checkpoint before releasing local work, just as for data files.
+        self.verify([file_record(batch / "progress.json", "progress.json")], result.oid)
         return result.oid
 
 

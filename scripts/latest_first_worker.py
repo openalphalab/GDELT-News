@@ -94,6 +94,7 @@ def publish(hub, batch, record, initial_start, initial, retry_hours=24, now=None
             protected_missing=()):
     """Commit one lane without changing either other cursor; recover lost responses."""
     cw.verify_local(batch, record)
+    original, record = record, cw.public_record(record)
     now = now or datetime.now(timezone.utc)
     remote, parent = hub.progress()
     validate_remote(remote, initial_start)
@@ -104,13 +105,15 @@ def publish(hub, batch, record, initial_start, initial, retry_hours=24, now=None
             raise RuntimeError("First latest-first publication must be live data")
         remote = initial
     progress = copy.deepcopy(remote)
-    manifest = record["files"][-1]
+    receipt = cw.publication_receipt(record)
     kind = record["kind"]
     if kind not in LANES or record["pipeline"] != cw.PIPELINE:
         raise RuntimeError("Unknown publication lane/pipeline")
     acknowledged = progress.get("lane_commits", {}).get(kind, {})
-    if acknowledged.get("sha256") == manifest["sha256"] and acknowledged.get("path") == manifest["path"]:
-        hub.verify(record["files"], parent)
+    if cw.receipt_matches(acknowledged, original, record):
+        # Old acknowledged receipts still refer to an uploaded manifest; new
+        # empty receipts are acknowledged entirely inside progress.json.
+        hub.verify(original["files"] if acknowledged.get("path") else record["files"], parent)
         return progress, parent
     cw.parse_minute(record["start"])
     cw.parse_minute(record["end"])
@@ -136,13 +139,15 @@ def publish(hub, batch, record, initial_start, initial, retry_hours=24, now=None
     pending.update(m for m in record["missing_minutes"] if m >= earliest)
     progress.update(
         pending_missing_minutes=sorted(m for m in pending if m >= earliest or m in protected_missing),
-        last_action=kind, last_manifest=manifest["path"], last_manifest_sha256=manifest["sha256"],
+        last_action=kind, last_receipt_sha256=receipt["sha256"],
         total_observations=progress.get("total_observations", 0) + record["observations"],
         total_quarantined_metadata_records=progress.get("total_quarantined_metadata_records", 0)
             + record.get("quarantined_metadata_records", 0),
         published_bytes=progress.get("published_bytes", 0) + sum(x["bytes"] for x in record["files"]),
         updated_at=now.isoformat())
-    progress.setdefault("lane_commits", {})[kind] = {"path": manifest["path"], "sha256": manifest["sha256"]}
+    if receipt["path"]:
+        progress.update(last_manifest=receipt["path"], last_manifest_sha256=receipt["sha256"])
+    progress.setdefault("lane_commits", {})[kind] = {"path": receipt["path"], "sha256": receipt["sha256"]}
     if maximum_gb is not None:
         cw.check_upload_budget(hub, record["files"], maximum_gb)
     revision = hub.commit(batch, record, progress, parent)

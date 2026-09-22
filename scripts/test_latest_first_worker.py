@@ -238,8 +238,8 @@ class LatestFirstTests(unittest.TestCase):
                 for call in commit.call_args_list:
                     record = call.args[1]
                     self.assertEqual(record["observations"], 0)
-                    self.assertEqual(len(record["files"]), 1)
-                    self.assertFalse(any(f["path"].endswith(".parquet") for f in record["files"]))
+                    self.assertEqual(record["files"], [])
+                    self.assertIsNone(record["receipt"]["path"])
                 self.assertEqual(hub.state["total_observations"], 0)
                 self.assertIn("20260922120000", hub.state["pending_missing_minutes"])
 
@@ -257,11 +257,48 @@ class LatestFirstTests(unittest.TestCase):
             hub.fail_response = True
             with self.assertRaises(ConnectionError):
                 lf.publish(hub, args.state / "batch", record, cw.FIRST, initial, now=NOW)
+            back_batch, back = item(args.state.parent, *lf.plan_for_lane(args, hub.state, {}, NOW, "backfill"))
+            lf.publish(hub, back_batch, back, cw.FIRST, initial, now=NOW)
             progress, _ = lf.publish(hub, args.state / "batch", record, cw.FIRST, initial, now=NOW)
-            self.assertEqual(hub.uploads, 1)
+            self.assertEqual(hub.uploads, 2)
             self.assertEqual(progress["live_next_minute"], cw.successor(start))
             self.assertEqual(progress["pending_missing_minutes"], [start])
-            self.assertEqual(progress["total_observations"], 0)
+            self.assertEqual(progress["total_observations"], 7)
+            self.assertIsNone(progress["lane_commits"]["live"]["path"])
+            self.assertEqual(progress["last_manifest"], back["files"][-1]["path"])
+
+    def test_old_pending_empty_manifest_is_not_uploaded_and_can_recover_old_ack(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            args = settings(root)
+            initial = lf.bootstrap(args, None, NOW)
+            batch, old = item(root, initial["live_start"], initial["live_start"], "live")
+            old.update(observations=0, files=[old["files"][-1]])
+            hub = FakeHub()
+            with patch.object(hub, "commit", wraps=hub.commit) as commit:
+                progress, _ = lf.publish(hub, batch, old, cw.FIRST, initial, now=NOW)
+                self.assertEqual(commit.call_args.args[1]["files"], [])
+                self.assertIsNone(progress["lane_commits"]["live"]["path"])
+            lf.publish(hub, batch, old, cw.FIRST, initial, now=NOW)
+            self.assertEqual(hub.uploads, 1)
+            # Also accept a commit made by the previous deployed version before
+            # upgrading; do not repeat it or discard its unverified receipt.
+            hub.state["lane_commits"]["live"]["path"] = old["files"][-1]["path"]
+            lf.publish(hub, batch, old, cw.FIRST, initial, now=NOW)
+            self.assertEqual(hub.uploads, 1)
+
+    def test_corrupt_local_empty_receipt_is_not_published(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = settings(Path(d))
+            initial = lf.bootstrap(args, None, NOW)
+            with patch("compact_worker.run", side_effect=lambda cmd: collection_result(args.state, cmd)), \
+                    patch("compact_worker.check_space"):
+                record = cw.build_batch(args, initial["live_start"], initial["live_start"], "live")
+            (args.state / "batch/manifest.json").write_bytes(b"corrupted")
+            hub = FakeHub()
+            with self.assertRaisesRegex(RuntimeError, "checksum"):
+                lf.publish(hub, args.state / "batch", record, cw.FIRST, initial, now=NOW)
+            self.assertEqual(hub.uploads, 0)
 
     def test_polling_without_a_new_minute_does_not_repeat_forward_collection(self):
         args = settings(Path("unused"))

@@ -58,10 +58,29 @@ def parquet_row(row, minute=None, raw_sha=None):
 
 
 def verify_local(batch, record):
-    for item in record["files"]:
+    items = record["files"] + ([record["receipt"]] if record.get("receipt") else [])
+    for item in items:
         path = batch / item["local"]
         if path.stat().st_size != item["bytes"] or digest(path) != item["sha256"]:
             raise RuntimeError("Pending publication checksum mismatch")
+
+
+def publication_receipt(record):
+    """A local receipt identifies checkpoint-only work without uploading a file."""
+    return record.get("receipt") or record["files"][-1]
+
+
+def public_record(record):
+    """Adopt older pending empty batches without changing their receipt identity."""
+    if record["observations"]:
+        return record
+    return {**record, "files": [], "receipt": {**publication_receipt(record), "path": None}}
+
+
+def receipt_matches(acknowledged, original, public):
+    receipt = publication_receipt(public)
+    paths = {receipt["path"], publication_receipt(original)["path"]}
+    return acknowledged.get("sha256") == receipt["sha256"] and acknowledged.get("path") in paths
 
 
 def collect_window(args, archive, start, end):
@@ -196,8 +215,8 @@ def build_batch(args, start, maximum_end, kind="forward"):
         raise RuntimeError("Parquet row count mismatch")
     suffix = "-late" if kind == "repair" else ""
     prefix = f"{start[:4]}/{start[4:6]}/{start[6:8]}/{start}-{minute}{suffix}"
-    # An absent or valid-but-empty source advances coverage, not the dataset's
-    # data files. Its manifest still durably records gaps and late-file retries.
+    # Empty checks advance only the shared checkpoint. Their receipt stays local
+    # until the checkpoint is verified; no per-check file is uploaded.
     files = ([{**file_record(parquet, f"data/{prefix}.parquet"), "local": parquet.name}]
              if observations else [])
     record = {"schema": 3, "pipeline": PIPELINE, "kind": kind, "start": start, "end": minute,
@@ -208,7 +227,11 @@ def build_batch(args, start, maximum_end, kind="forward"):
               "minutes": outcomes, "files": files}
     manifest_path = batch / "manifest.json"
     write_json(manifest_path, record)
-    record["files"] = files + [{**file_record(manifest_path, f"manifests/{prefix}.json"), "local": manifest_path.name}]
+    receipt = {**file_record(manifest_path, f"manifests/{prefix}.json"), "local": manifest_path.name}
+    if observations:
+        record["files"] = files + [receipt]
+    else:
+        record["receipt"] = {**receipt, "path": None}
     write_json(ready, record)
     return record
 
@@ -256,15 +279,16 @@ def check_upload_budget(hub, files, maximum_gb):
 
 def publish(hub, batch, record, initial_start, retry_hours=24, now=None, maximum_gb=None):
     verify_local(batch, record)
+    original, record = record, public_record(record)
     now = now or datetime.now(timezone.utc)
     remote, parent = hub.progress()
     if remote and remote.get("schedule"):
         raise RuntimeError("Latest-first checkpoint requires --latest-first scheduling")
     if remote and (remote.get("pipeline") != PIPELINE or remote.get("initial_start") != initial_start):
         raise RuntimeError("Remote checkpoint uses another pipeline/start")
-    manifest = record["files"][-1]
-    if remote and remote.get("last_manifest_sha256") == manifest["sha256"]:
-        hub.verify(record["files"], parent)
+    receipt = publication_receipt(record)
+    if remote and remote.get("last_receipt_sha256", remote.get("last_manifest_sha256")) == receipt["sha256"]:
+        hub.verify(original["files"] if remote.get("last_manifest") == publication_receipt(original)["path"] else record["files"], parent)
         return remote, parent
     next_minute = (remote or {}).get("next_minute", initial_start)
     kind = record["kind"]
@@ -282,7 +306,9 @@ def publish(hub, batch, record, initial_start, retry_hours=24, now=None, maximum
                 "next_minute": next_minute if kind == "repair" else record["next_minute"],
                 "last_end": remote["last_end"] if kind == "repair" else record["end"],
                 "last_action": kind, "pending_missing_minutes": pending,
-                "last_manifest": manifest["path"], "last_manifest_sha256": manifest["sha256"],
+                "last_receipt_sha256": receipt["sha256"],
+                "last_manifest": receipt["path"] or (remote or {}).get("last_manifest"),
+                "last_manifest_sha256": receipt["sha256"] if receipt["path"] else (remote or {}).get("last_manifest_sha256"),
                 "total_observations": (remote or {}).get("total_observations", 0) + record["observations"],
                 "total_quarantined_metadata_records": (remote or {}).get("total_quarantined_metadata_records", 0) + record.get("quarantined_metadata_records", 0),
                 "published_bytes": (remote or {}).get("published_bytes", 0) + sum(x["bytes"] for x in record["files"]),

@@ -192,7 +192,7 @@ class CompactTests(unittest.TestCase):
         hub.api.dataset_info = lambda *a, **k: SimpleNamespace(used_storage=10)
         self.assertEqual(cw.check_upload_budget(hub, [{"bytes": 100}], 7000), 10)
 
-    def test_missing_batch_publishes_only_coverage_manifest_without_empty_parquet(self):
+    def test_missing_batch_has_local_receipt_but_no_public_files(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             args = settings(root)
@@ -201,8 +201,8 @@ class CompactTests(unittest.TestCase):
             with patch("compact_worker.run", side_effect=fake_run), patch("compact_worker.check_space"):
                 item = cw.build_batch(args, cw.FIRST, cw.FIRST)
             self.assertEqual(item["missing_minutes"], [cw.FIRST])
-            self.assertEqual(len(item["files"]), 1)
-            self.assertTrue(item["files"][0]["path"].startswith("manifests/"))
+            self.assertEqual(item["files"], [])
+            self.assertIsNone(item["receipt"]["path"])
             self.assertEqual(cw.read_json(root / "batch/manifest.json")["files"], [])
             self.assertEqual(pq.read_table(root / "batch/observations.parquet").schema, cw.SCHEMA)
             self.assertFalse((root / "batch/evidence.tar").exists())
@@ -235,8 +235,8 @@ class CompactTests(unittest.TestCase):
             self.assertEqual(result["quarantined_metadata_records"], 3)
             self.assertEqual(result["minutes"][0]["status"], "complete")
             self.assertIn("raw_sha256", result["minutes"][0])
-            self.assertEqual(len(result["files"]), 1)
-            self.assertTrue(result["files"][0]["path"].endswith(".json"))
+            self.assertEqual(result["files"], [])
+            self.assertIsNone(result["receipt"]["path"])
 
     def test_source_failure_never_seals_a_batch(self):
         with tempfile.TemporaryDirectory() as d:
@@ -245,6 +245,24 @@ class CompactTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "503"):
                     cw.build_batch(args, cw.FIRST, cw.FIRST)
             self.assertFalse((args.state / "batch/ready.json").exists())
+
+    def test_forward_checkpoint_only_commit_recovers_without_new_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = settings(Path(d))
+            with patch("compact_worker.run", side_effect=lambda cmd: collection_result(args.state, cmd)), \
+                    patch("compact_worker.check_space"):
+                record = cw.build_batch(args, cw.FIRST, cw.FIRST)
+            hub = FakeHub()
+            hub.fail_response = True
+            now = cw.parse_minute(cw.FIRST)
+            with self.assertRaises(ConnectionError):
+                cw.publish(hub, args.state / "batch", record, cw.FIRST, now=now)
+            progress, _ = cw.publish(hub, args.state / "batch", record, cw.FIRST, now=now)
+            self.assertEqual(hub.uploads, 1)
+            self.assertEqual(progress["next_minute"], cw.successor(cw.FIRST))
+            self.assertEqual(progress["pending_missing_minutes"], [cw.FIRST])
+            self.assertIsNone(progress["last_manifest"])
+            self.assertEqual(progress["published_bytes"], 0)
 
     def test_valid_reconstruction_uses_no_metadata_services(self):
         with tempfile.TemporaryDirectory() as d:

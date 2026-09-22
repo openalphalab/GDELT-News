@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 from unittest.mock import patch
 
 import pyarrow.parquet as pq
@@ -53,6 +54,28 @@ def publication(batch):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_checkpoint_only_commit_uploads_no_data_or_manifest_and_verifies_checkpoint(self):
+        with tempfile.TemporaryDirectory() as d:
+            batch = Path(d)
+            hub = worker.Hub.__new__(worker.Hub)
+            hub.repo = "owner/data"
+            hub.api = SimpleNamespace(create_commit=Mock(return_value=SimpleNamespace(oid="new")))
+            hub.verify = Mock()
+            record = {"start": worker.FIRST, "end": worker.FIRST, "files": []}
+            progress = {"next_minute": worker.successor(worker.FIRST), "pending_missing_minutes": [worker.FIRST]}
+            self.assertEqual(hub.commit(batch, record, progress, "parent"), "new")
+            uploaded = hub.api.create_commit.call_args.kwargs
+            self.assertEqual(uploaded["parent_commit"], "parent")
+            self.assertEqual([op.path_in_repo for op in uploaded["operations"]], ["progress.json", "README.md"])
+            self.assertEqual(worker.read_json(batch / "progress.json"), progress)
+            hub.verify.assert_called_once_with([worker.file_record(batch / "progress.json", "progress.json")], "new")
+
+    def test_no_artifacts_to_verify_does_not_make_an_empty_paths_api_call(self):
+        hub = worker.Hub.__new__(worker.Hub)
+        hub.api = SimpleNamespace(get_paths_info=Mock(side_effect=AssertionError("No empty API request")))
+        hub.verify([], "revision")
+        hub.api.get_paths_info.assert_not_called()
+
     def test_lost_commit_response_recovers_without_duplicate_publication(self):
         with tempfile.TemporaryDirectory() as directory:
             batch = Path(directory) / "batch"
