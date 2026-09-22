@@ -216,7 +216,8 @@ class LatestFirstTests(unittest.TestCase):
                 archive = Path(command[command.index("--archive") + 1])
                 collection_result(archive.parent.parent, command)
             with patch("latest_first_worker.datetime") as clock, patch("compact_worker.run", side_effect=fake_collect), \
-                    patch("compact_worker.check_space"), patch("compact_worker.check_upload_budget"):
+                    patch("compact_worker.check_space"), patch("compact_worker.check_upload_budget"), \
+                    patch.object(hub, "commit", wraps=hub.commit) as commit:
                 clock.now.return_value = NOW
                 lf.run_scheduler(args, hub)
                 self.assertEqual(hub.state["last_action"], "live")
@@ -234,6 +235,42 @@ class LatestFirstTests(unittest.TestCase):
                 self.assertEqual(hub.state["backfill_next_end"], end)
                 self.assertEqual(hub.state["live_next_minute"], "20260922120100")
                 self.assertEqual(hub.uploads, 3)
+                for call in commit.call_args_list:
+                    record = call.args[1]
+                    self.assertEqual(record["observations"], 0)
+                    self.assertEqual(len(record["files"]), 1)
+                    self.assertFalse(any(f["path"].endswith(".parquet") for f in record["files"]))
+                self.assertEqual(hub.state["total_observations"], 0)
+                self.assertIn("20260922120000", hub.state["pending_missing_minutes"])
+
+    def test_empty_commit_response_loss_preserves_retry_queue_without_duplicate_upload(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = settings(Path(d))
+            initial = lf.bootstrap(args, None, NOW)
+            args.state = args.state / "live"
+            start = initial["live_start"]
+            def fake_collect(command):
+                collection_result(args.state, command)
+            with patch("compact_worker.run", side_effect=fake_collect), patch("compact_worker.check_space"):
+                record = cw.build_batch(args, start, start, "live")
+            hub = FakeHub()
+            hub.fail_response = True
+            with self.assertRaises(ConnectionError):
+                lf.publish(hub, args.state / "batch", record, cw.FIRST, initial, now=NOW)
+            progress, _ = lf.publish(hub, args.state / "batch", record, cw.FIRST, initial, now=NOW)
+            self.assertEqual(hub.uploads, 1)
+            self.assertEqual(progress["live_next_minute"], cw.successor(start))
+            self.assertEqual(progress["pending_missing_minutes"], [start])
+            self.assertEqual(progress["total_observations"], 0)
+
+    def test_polling_without_a_new_minute_does_not_repeat_forward_collection(self):
+        args = settings(Path("unused"))
+        progress = lf.bootstrap(args, None, NOW)
+        progress["live_next_minute"] = "20260922120000"
+        self.assertIsNone(lf.plan_for_lane(args, progress, {}, NOW, "live"))
+        self.assertIsNone(lf.plan_for_lane(args, progress, {}, NOW + timedelta(seconds=20), "live"))
+        self.assertEqual(lf.plan_for_lane(args, progress, {}, NOW + timedelta(seconds=30), "live"),
+                         ("20260922120000", "20260922120000", "live"))
 
 
 if __name__ == "__main__":

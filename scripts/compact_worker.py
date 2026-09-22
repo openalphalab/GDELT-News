@@ -196,7 +196,10 @@ def build_batch(args, start, maximum_end, kind="forward"):
         raise RuntimeError("Parquet row count mismatch")
     suffix = "-late" if kind == "repair" else ""
     prefix = f"{start[:4]}/{start[4:6]}/{start[6:8]}/{start}-{minute}{suffix}"
-    files = [{**file_record(parquet, f"data/{prefix}.parquet"), "local": parquet.name}]
+    # An absent or valid-but-empty source advances coverage, not the dataset's
+    # data files. Its manifest still durably records gaps and late-file retries.
+    files = ([{**file_record(parquet, f"data/{prefix}.parquet"), "local": parquet.name}]
+             if observations else [])
     record = {"schema": 3, "pipeline": PIPELINE, "kind": kind, "start": start, "end": minute,
               "next_minute": successor(minute), "observations": observations,
               "code_revision": os.environ.get("GDELT_CODE_REVISION", "unknown"),

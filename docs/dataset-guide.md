@@ -34,6 +34,8 @@ The checkpoint fields mean:
 
 Files appear after a verified batch commit. The Hub does not show the VM's in-flight transfer percentage. Refresh the files page or checkpoint to see new publications; the dataset viewer can update later than the files.
 
+**No rows means no Parquet upload.** An empty or missing interval updates only its small coverage manifest and checkpoint. Missing recent files remain eligible for late-file retries. Repeated missing-file probes and idle 30-second polls do not create duplicate data. A timestamp can therefore be recorded in a coverage manifest without a corresponding Parquet shard.
+
 ## Schema
 
 The four core fields are strings. `observation_id` is a 64-character SHA256 string, `type` is an 8-bit integer (1 or 2), and `metadata` is a Parquet struct. Text and selected fields are retained from the reconstruction export; there is no summarization or translation.

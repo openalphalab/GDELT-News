@@ -109,6 +109,13 @@ per absent file. Successful late arrivals are separate `-late` Parquet shards an
 never rewind the forward cursor. Repeated 404 probes do not create remote commits.
 Older gaps and arrivals beyond the retry window need a separate repair run.
 
+A new source interval with zero rows publishes only its small coverage manifest
+and checkpoint, never an empty Parquet shard. This applies to missing files and
+valid inputs containing no reconstructable observations. Missing recent files
+remain in the durable retry queue; valid zero-row inputs retain their provenance
+and quarantine counts. Rechecking an absent file does not publish another commit,
+and idle 30-second polls do not recollect already-processed live minutes.
+
 All compact history is retained. Before collection and upload, the worker checks
 the dataset's reported `usedStorage`, stopping new uploads if usage plus twice the
 incoming batch bytes would reach 7,000 GB (decimal). It does not automatically

@@ -192,7 +192,7 @@ class CompactTests(unittest.TestCase):
         hub.api.dataset_info = lambda *a, **k: SimpleNamespace(used_storage=10)
         self.assertEqual(cw.check_upload_budget(hub, [{"bytes": 100}], 7000), 10)
 
-    def test_missing_batch_has_only_parquet_and_manifest_no_raw_uploads(self):
+    def test_missing_batch_publishes_only_coverage_manifest_without_empty_parquet(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             args = settings(root)
@@ -201,11 +201,42 @@ class CompactTests(unittest.TestCase):
             with patch("compact_worker.run", side_effect=fake_run), patch("compact_worker.check_space"):
                 item = cw.build_batch(args, cw.FIRST, cw.FIRST)
             self.assertEqual(item["missing_minutes"], [cw.FIRST])
-            self.assertEqual(len(item["files"]), 2)
+            self.assertEqual(len(item["files"]), 1)
+            self.assertTrue(item["files"][0]["path"].startswith("manifests/"))
+            self.assertEqual(cw.read_json(root / "batch/manifest.json")["files"], [])
             self.assertEqual(pq.read_table(root / "batch/observations.parquet").schema, cw.SCHEMA)
             self.assertFalse((root / "batch/evidence.tar").exists())
             with patch("compact_worker.run", side_effect=AssertionError("No recollection")):
                 self.assertEqual(cw.build_batch(args, cw.FIRST, cw.FIRST), item)
+
+    def test_valid_zero_row_source_keeps_provenance_without_uploading_empty_data(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            args = settings(root)
+            def fake_run(command):
+                self.assertNotEqual(command[0], "exporter")
+                archive = root / "batch/archive"
+                collection_result(root, command, {cw.FIRST: "complete"})
+                raw = archive / "raw/2020/01/01" / (cw.FIRST + ".webngrams.json.gz")
+                raw.parent.mkdir(parents=True)
+                raw.write_bytes(gzip.compress(b"quarantined input"))
+                articles = archive / "articles/current/articles.gz"
+                articles.parent.mkdir(parents=True)
+                articles.write_bytes(gzip.compress(b""))
+                cw.write_json(articles.parent / (cw.digest(raw) + ".manifest.json"), {
+                    "profile": "current", "raw": {"sha256": cw.digest(raw)},
+                    "output": str(articles.relative_to(archive)), "output_sha256": cw.digest(articles),
+                    "counts": {"articles": 0, "type1_articles": 0, "type2_articles": 0,
+                               "quarantined_metadata_records": 3}})
+            with patch("compact_worker.run", side_effect=fake_run), patch("compact_worker.check_space"):
+                result = cw.build_batch(args, cw.FIRST, cw.FIRST)
+            self.assertEqual(result["observations"], 0)
+            self.assertEqual(result["missing_minutes"], [])
+            self.assertEqual(result["quarantined_metadata_records"], 3)
+            self.assertEqual(result["minutes"][0]["status"], "complete")
+            self.assertIn("raw_sha256", result["minutes"][0])
+            self.assertEqual(len(result["files"]), 1)
+            self.assertTrue(result["files"][0]["path"].endswith(".json"))
 
     def test_source_failure_never_seals_a_batch(self):
         with tempfile.TemporaryDirectory() as d:
