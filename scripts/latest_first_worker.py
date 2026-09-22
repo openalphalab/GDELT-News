@@ -59,7 +59,10 @@ def plan_for_lane(args, remote, schedule, now, lane):
         due = [m for m in cw.pending_within_window(remote, now, args.retry_missing_hours)
                if schedule.get(m, {}).get("next_check", 0) <= now.timestamp()]
         if due:
-            minute = min(due, key=lambda m: (schedule.get(m, {}).get("next_check", 0), m))
+            # Do not bury delayed current files behind hundreds of normal gaps
+            # encountered while traversing yesterday's historical intervals.
+            recent = [m for m in due if m >= remote["live_start"]]
+            minute = min(recent or due, key=lambda m: (schedule.get(m, {}).get("next_check", 0), m))
             return minute, minute, lane
         return None
     raise ValueError("Unknown scheduling lane")
@@ -77,10 +80,14 @@ def pending_plan(state, lane):
     return None
 
 
-def choose_work(args, remote, schedule, retries, now, last_lane):
-    # Latest files always win. Give each due repair at most one turn between
-    # backward chunks, even when a large set of upstream files remains absent.
-    order = ("live", "backfill", "repair") if last_lane == "repair" else ("live", "repair", "backfill")
+def choose_work(args, remote, schedule, retries, now, last_lane, repair_streak=None):
+    # Latest files always win. Allow four recent recovery probes between backward
+    # chunks, but only one historical probe. A live interruption keeps this budget.
+    streak = int(last_lane == "repair") if repair_streak is None else repair_streak
+    repair = pending_plan(args.state, "repair") or plan_for_lane(args, remote, schedule, now, "repair")
+    recent_repair = repair is not None and repair[0] >= remote["live_start"]
+    yield_to_backfill = streak >= (4 if recent_repair else 1)
+    order = ("live", "backfill", "repair") if yield_to_backfill else ("live", "repair", "backfill")
     for lane in order:
         if retries.get(lane, {}).get("next_check", 0) > now.timestamp():
             continue
@@ -187,7 +194,7 @@ def run_scheduler(args, hub):
     initial_path = args.state / "latest-first-bootstrap.json"
     schedule = cw.read_json(retry_path) if retry_path.exists() else {}
     retries = cw.read_json(retry_state) if retry_state.exists() else {}
-    last_lane, global_failures = None, 0
+    last_lane, global_failures, repair_streak = None, 0, 0
     while True:
         lane = None
         try:
@@ -211,7 +218,7 @@ def run_scheduler(args, hub):
                 if retries.get("live", {}).get("next_check", 0) > now.timestamp():
                     plan = None
             else:
-                plan = choose_work(args, effective, schedule, retries, now, last_lane)
+                plan = choose_work(args, effective, schedule, retries, now, last_lane, repair_streak)
             if not plan:
                 cw.write_json(args.state / "status.json", {"state": "waiting", "schedule": SCHEDULE,
                     "live_next_minute": effective["live_next_minute"],
@@ -257,6 +264,10 @@ def run_scheduler(args, hub):
             cw.remove_owned(lane_args.state / "cache", lane_args.state)
             retries.pop(lane, None)
             cw.write_json(retry_state, retries)
+            if lane == "repair":
+                repair_streak += 1
+            elif lane == "backfill":
+                repair_streak = 0
             last_lane, global_failures = lane, 0
             if args.once:
                 return

@@ -26,6 +26,14 @@ Near the live edge, the existing one-minute publication plan reduces the window 
 one minute automatically; this setting does not add 15 minutes of live lag.
 Use `--download-workers 1 --collect-window-minutes 1` for a serial comparison.
 
+The worker explicitly downloads from GDELT's public Google Cloud Storage bucket:
+`https://storage.googleapis.com/data.gdeltproject.org/gdeltv3/webngrams/`.
+The website download endpoint was observed caching early 404s for 3,600 seconds,
+even after the same object was present in that bucket. The bucket's missing-object
+response uses `private, max-age=0`. Manifests retain the canonical source URL and
+the actual `download_source`; reconstruction and observation identity are unchanged.
+The standalone Rust CLI still accepts `collect --base-url` for explicit source selection.
+
 Historical source minutes can exceed the CLI's conservative default input size.
 The supplied Compose configuration allows 1 GiB compressed / 4 GiB expanded and
 sixteen million total fragments per minute, while retaining the per-observation and bounded-search
@@ -82,6 +90,10 @@ This is one coordinated process, not simultaneous reconstruction jobs: it keeps
 the existing 12 GiB ceiling and one atomic uploader. Live, backfill and late-file
 repair have separate local pending directories and retry backoffs. An errored
 historical chunk stays on disk for retry while live work remains eligible.
+Delayed files in the live date range take priority over historical missing-file
+retries. Up to four recent repair attempts can run between backward chunks, with
+new live work still taking precedence. Historical-only retries retain one turn
+per backward chunk; neither queue changes or rewinds the coverage cursors.
 Shared disk/quota/network failures can still affect all lanes. A single difficult
 input can delay switching lanes until its collector attempt finishes or fails.
 

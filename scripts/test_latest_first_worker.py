@@ -90,12 +90,36 @@ class LatestFirstTests(unittest.TestCase):
             remote = lf.bootstrap(args, None, NOW)
             remote.update(live_next_minute="20260922120000", pending_missing_minutes=["20260922115000"])
             self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "backfill")[2], "repair")
-            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair")[2], "backfill")
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", repair_streak=4)[2], "backfill")
             plan = lf.plan_for_lane(args, remote, {}, NOW, "backfill")
             cw.write_json(args.state / "backfill/batch/request.json", {
                 "pipeline": cw.PIPELINE, "kind": "backfill", "start": plan[0], "maximum_end": plan[1]})
             args.collect_window_minutes = 1
-            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair"), plan)
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", repair_streak=4), plan)
+
+    def test_delayed_live_files_take_priority_over_older_historical_retry_queue(self):
+        args = settings(Path("unused"))
+        remote = lf.bootstrap(args, None, NOW)
+        old, recent = "20260922000100", "20260922115000"
+        remote["pending_missing_minutes"] = [old, recent]
+        schedule = {old: {"next_check": 0}, recent: {"next_check": NOW.timestamp() - 1}}
+        self.assertEqual(lf.plan_for_lane(args, remote, schedule, NOW, "repair"), (recent, recent, "repair"))
+        schedule[recent]["next_check"] = NOW.timestamp() + 30
+        self.assertEqual(lf.plan_for_lane(args, remote, schedule, NOW, "repair"), (old, old, "repair"))
+
+    def test_recent_recovery_burst_is_bounded_and_live_always_preempts_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = settings(Path(d))
+            remote = lf.bootstrap(args, None, NOW)
+            remote.update(live_next_minute="20260922120000", pending_missing_minutes=["20260922115000"])
+            for streak in range(4):
+                self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", streak)[2], "repair")
+            # A new-live interruption does not reset the historical fairness budget.
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "live", 4)[2], "backfill")
+            remote["live_next_minute"] = "20260922115900"
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", 4)[2], "live")
+            remote.update(live_next_minute="20260922120000", pending_missing_minutes=["20260922000100"])
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", 1)[2], "backfill")
 
     def test_response_loss_then_other_lane_commit_never_duplicates(self):
         with tempfile.TemporaryDirectory() as d:

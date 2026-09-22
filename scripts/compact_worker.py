@@ -18,6 +18,9 @@ from enrich_metadata import digest
 
 LOG = logging.getLogger("gdelt-compact")
 PIPELINE = "gdelt-types12-parquet-native-v3"
+# The website CDN can cache an early 404 for an hour. GDELT's public bucket
+# returns uncached missing-object responses, allowing prompt late-file recovery.
+SOURCE_BASE_URL = "https://storage.googleapis.com/data.gdeltproject.org/gdeltv3/webngrams"
 NATIVE_FIELDS = [
     ("source_minute", pa.string()), ("raw_sha256", pa.string()),
     ("id", pa.int64()), ("type_id", pa.int64()), ("fragments", pa.int64()),
@@ -95,6 +98,7 @@ def collect_window(args, archive, start, end):
          "--quarantine-invalid-metadata", "--threads", args.threads,
          "--max-expanded-mib", args.max_expanded_mib, "--max-fragments", args.max_fragments,
          "collect", "--start", start, "--end", end, "--downloads", downloads,
+         "--base-url", SOURCE_BASE_URL,
          "--min-free-gib", args.min_free_gib + extra_gib, "--max-download-mib", args.max_download_mib])
     latest = sorted((archive / "runs").iterdir())[-1]
     request, summary = read_json(latest / "request.json"), read_json(latest / "summary.json")
@@ -168,6 +172,7 @@ def build_batch(args, start, maximum_end, kind="forward"):
                 counts = manifest["counts"]
                 outcome.update(raw_sha256=raw_sha, raw_bytes=raw.stat().st_size,
                                source=f"https://data.gdeltproject.org/gdeltv3/webngrams/{minute}.webngrams.json.gz",
+                               download_source=f"{SOURCE_BASE_URL}/{minute}.webngrams.json.gz",
                                observations=counts["articles"], type1=counts["type1_articles"],
                                type2=counts["type2_articles"],
                                quarantined_metadata_records=counts.get("quarantined_metadata_records", 0))

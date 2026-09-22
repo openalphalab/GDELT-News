@@ -318,6 +318,7 @@ class CompactTests(unittest.TestCase):
                 item = cw.build_batch(args, cw.FIRST, end)
             self.assertEqual(len(calls), 3)
             self.assertEqual([c[c.index("--downloads") + 1] for c in calls], [3, 3, 2])
+            self.assertTrue(all(c[c.index("--base-url") + 1] == cw.SOURCE_BASE_URL for c in calls))
             self.assertEqual([c[c.index("--min-free-gib") + 1] for c in calls], [14, 14, 13])
             self.assertEqual([x["minute"] for x in item["minutes"]], [f"20200101000{i}00" for i in range(1, 9)])
             self.assertEqual(item["next_minute"], "20200101000900")

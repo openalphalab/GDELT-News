@@ -34,6 +34,8 @@ The checkpoint fields mean:
 
 Files appear after a verified batch commit. The Hub does not show the VM's in-flight transfer percentage. Refresh the files page or checkpoint to see new publications; the dataset viewer can update later than the files.
 
+The worker downloads from GDELT's own public Google Cloud Storage bucket to avoid the website CDN's cached missing-file responses. The same source objects and reconstruction rules are used; new nonempty manifests record both the canonical URL and actual `download_source`. Delayed live files receive retry priority over historical missing minutes. GDELT files may arrive in bursts around its 15-minute heartbeat; source availability and processing time determine when rows appear here, rather than a fixed upload timetable.
+
 **No rows means no Parquet or manifest file.** An empty or missing interval updates only the shared `progress.json` checkpoint. Missing recent timestamps remain eligible for late-file retries for 24 hours. Repeated missing-file probes and idle 30-second polls do not create duplicate data. Empty-only intervals do not retain individual public manifests; mixed batches with actual rows still include their source-minute outcomes in their manifests.
 
 ## Schema
