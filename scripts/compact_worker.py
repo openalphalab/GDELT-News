@@ -218,8 +218,7 @@ def build_batch(args, start, maximum_end, kind="forward"):
             minute = successor(minute)
     if pq.ParquetFile(parquet).metadata.num_rows != observations:
         raise RuntimeError("Parquet row count mismatch")
-    suffix = "-late" if kind == "repair" else ""
-    prefix = f"{start[:4]}/{start[4:6]}/{start[6:8]}/{start}-{minute}{suffix}"
+    prefix = f"{start[:4]}/{start[4:6]}/{start[6:8]}/{start}-{minute}"
     # Empty checks advance only the shared checkpoint. Their receipt stays local
     # until the checkpoint is verified; no per-check file is uploaded.
     files = ([{**file_record(parquet, f"data/{prefix}.parquet"), "local": parquet.name}]

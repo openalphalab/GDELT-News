@@ -117,8 +117,9 @@ lost upload response or power failure retries the same immutable batch. Failed
 downloads, corrupt inputs, full disks, authentication failures and storage quota
 errors retain local pending work and retry with backoff. Recent HTTP 404s are stored
 in a durable retry queue for 24 hours, checked with 30-second to five-minute backoff
-per absent file. Successful late arrivals are separate `-late` Parquet shards and
-never rewind the forward cursor. Repeated 404 probes do not create remote commits.
+per absent file. Recovered files use the same `START-END.parquet` naming as other
+shards; their manifests record `kind: repair`. Recovery never rewinds the forward
+cursor. Repeated 404 probes do not create remote commits.
 Older gaps and arrivals beyond the retry window need a separate repair run.
 
 A new source interval with zero rows updates only the shared `progress.json`:

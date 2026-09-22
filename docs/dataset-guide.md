@@ -10,7 +10,7 @@ Historical coverage extends toward **2020-01-01 00:01 UTC**, the earliest file d
 
 The persistent Alibaba VM gives **recent files priority** and works **backward through history** between live batches. **There is no 48-hour enrichment delay, and current news does not wait for the historical backfill.** The worker uses a **one-minute safety margin**, checks live work before each backward chunk and polls every **30 seconds** when idle. One coordinator reconstructs one input at a time and publishes atomically, with independent progress and retry state for live, historical and late-file work. Actual latency includes upstream publication, the current work unit, download, reconstruction and upload time; it is not a guaranteed one-minute delivery service.
 
-Backward chunks cover up to **15 source minutes**, with four parallel downloads and one input reconstructed at a time. Within each Parquet shard, source minutes remain chronological. The backward cursor moves to the minute before the published chunk until it meets the already-published historical prefix; live and backward ranges do not overlap. Existing larger chronological shards remain valid. Live files initially returning 404 go into a durable retry queue for **24 hours**, with per-file retry delays from 30 seconds to five minutes. Late arrivals use separate `-late.parquet` shards without rewinding either cursor. Older gaps or files arriving beyond the retry window require a separate repair run.
+Backward chunks cover up to **15 source minutes**, with four parallel downloads and one input reconstructed at a time. Within each Parquet shard, source minutes remain chronological. The backward cursor moves to the minute before the published chunk until it meets the already-published historical prefix; live and backward ranges do not overlap. Existing larger chronological shards remain valid. Live files initially returning 404 go into a durable retry queue for **24 hours**, with per-file retry delays from 30 seconds to five minutes. Recovered files use the same `START-END.parquet` naming as other shards, with `kind: repair` in their manifests, without rewinding either cursor. Older gaps or files arriving beyond the retry window require a separate repair run.
 
 The checkpoint fields mean:
 
@@ -91,7 +91,6 @@ Fragments with an empty URL/date/language or invalid position decile are quarant
 | Path | Contents |
 | --- | --- |
 | `data/YYYY/MM/DD/START-END.parquet` | Compact data with native metadata, compressed using Zstandard |
-| `data/YYYY/MM/DD/START-END-late.parquet` | A recovered late source minute |
 | `manifests/YYYY/MM/DD/START-END.json` | File hashes, byte counts, code revision, source-minute outcomes and source URLs/hashes |
 | `progress.json` | Checkpoint committed atomically with the latest batch |
 | `README.md` | This guide |

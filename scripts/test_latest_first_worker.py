@@ -22,7 +22,7 @@ def item(root, start, end, kind, missing=()):
     record = {"pipeline": cw.PIPELINE, "kind": kind, "start": start, "end": end,
               "next_minute": cw.successor(end), "missing_minutes": list(missing), "observations": 7}
     cw.write_json(manifest, record)
-    prefix = f"{start}-{end}" + ("-late" if kind == "repair" else "")
+    prefix = f"{start}-{end}"
     record["files"] = [
         {**cw.file_record(data, f"data/{prefix}.parquet"), "local": data.name},
         {**cw.file_record(manifest, f"manifests/{prefix}.json"), "local": manifest.name}]

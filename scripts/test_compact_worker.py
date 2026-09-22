@@ -264,7 +264,7 @@ class CompactTests(unittest.TestCase):
             self.assertIsNone(progress["last_manifest"])
             self.assertEqual(progress["published_bytes"], 0)
 
-    def test_valid_reconstruction_uses_no_metadata_services(self):
+    def test_recovered_reconstruction_preserves_provenance_without_enrichment(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             args = settings(root)
@@ -295,7 +295,11 @@ class CompactTests(unittest.TestCase):
                     "output_sha256": cw.digest(articles), "counts": {"articles": 1, "type1_articles": 0, "type2_articles": 1,
                     "quarantined_metadata_records": 2}})
             with patch("compact_worker.run", side_effect=fake_run), patch("compact_worker.check_space"), patch("enrich_metadata.build", side_effect=AssertionError("No enrichment")):
-                item = cw.build_batch(args, cw.FIRST, cw.FIRST)
+                item = cw.build_batch(args, cw.FIRST, cw.FIRST, kind="repair")
+            self.assertEqual([f["path"] for f in item["files"]], [
+                "data/2020/01/01/20200101000100-20200101000100.parquet",
+                "manifests/2020/01/01/20200101000100-20200101000100.json"])
+            self.assertEqual(cw.read_json(root / "batch/manifest.json")["kind"], "repair")
             self.assertEqual(item["observations"], 1)
             self.assertEqual(item["quarantined_metadata_records"], 2)
             table = pq.read_table(root / "batch/observations.parquet")
