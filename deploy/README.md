@@ -2,7 +2,7 @@
 
 Run this worker on Linux with Docker and the Docker Compose plugin. It needs no
 inbound network port. It uses up to 4 CPUs and 12 GiB memory, keeps a 12 GiB disk
-reserve, and stores at most one unpublished batch plus its verified caches.
+reserve, and stores at most one unpublished batch per scheduling lane plus verified caches.
 The server's existing operating system need not be replaced.
 
 The Docker entrypoint is `scripts/compact_worker.py`. Public data has seven
@@ -70,14 +70,34 @@ sudo -E docker compose -f deploy/compose.yaml up -d
 sudo docker compose -f deploy/compose.yaml logs --tail=50 -f
 ```
 
-Backfill begins at 2020-01-01 00:01 UTC. Historical batches span up to six hours,
-sealing sooner at 256 MiB of compressed Parquet or near the disk reserve.
-After catching up, the worker follows new files with a one-minute safety margin,
-polls every 30 seconds, and publishes individual live source minutes. There is no
-48-hour wait. Actual latency includes upstream publication and processing time.
-Check `/srv/gdelt-news/data/status.json`, `checkpoint.json` and remote `progress.json`
-for actual progress and errors. The historical run does not deliver current news
-until it reaches current dates.
+The deployed `--latest-first` scheduler prioritizes current files and fills older
+history backward in chunks of up to 15 minutes. It begins live collection with
+the 15 source minutes ending at the one-minute safety cutoff, then follows newly
+available minutes. It checks live work before every historical chunk, polling
+every 30 seconds when idle. There is no 48-hour wait or requirement to finish
+history first. Actual latency includes upstream publication, the current bounded
+work unit, reconstruction and uploading; it is not a delivery-time guarantee.
+
+This is one coordinated process, not simultaneous reconstruction jobs: it keeps
+the existing 12 GiB ceiling and one atomic uploader. Live, backfill and late-file
+repair have separate local pending directories and retry backoffs. An errored
+historical chunk stays on disk for retry while live work remains eligible.
+Shared disk/quota/network failures can still affect all lanes. A single difficult
+input can delay switching lanes until its collector attempt finishes or fails.
+
+On upgrade, any existing forward batch is verified and published first. Already
+published 2020 data is retained. The remote checkpoint freezes a live/backfill
+boundary and a historical lower boundary at the end of that retained prefix.
+Backward chunks meet that prefix without republishing it. Source minutes within
+each chunk are still written in ascending order; chunks are selected newest first.
+The two cursors and data files commit atomically. Per-lane acknowledgements make a
+lost commit response idempotent even if another lane publishes before retry.
+The old chronological mode refuses checkpoints created by `--latest-first`.
+
+Check `/srv/gdelt-news/data/status.json`, `checkpoint.json`, per-lane `status.json`
+and remote `progress.json` for actual progress and errors. `live_next_minute` is
+the next new source minute; `backfill_next_end` is the newest still-unprocessed
+historical minute. Backfill is complete when it is less than `backfill_floor`.
 
 Each publication atomically commits Parquet, a small manifest and the remote
 checkpoint. Local scratch is removed only after remote hashes are verified. A

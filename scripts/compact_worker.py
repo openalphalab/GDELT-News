@@ -255,6 +255,8 @@ def publish(hub, batch, record, initial_start, retry_hours=24, now=None, maximum
     verify_local(batch, record)
     now = now or datetime.now(timezone.utc)
     remote, parent = hub.progress()
+    if remote and remote.get("schedule"):
+        raise RuntimeError("Latest-first checkpoint requires --latest-first scheduling")
     if remote and (remote.get("pipeline") != PIPELINE or remote.get("initial_start") != initial_start):
         raise RuntimeError("Remote checkpoint uses another pipeline/start")
     manifest = record["files"][-1]
@@ -311,6 +313,8 @@ def main():
     parser.add_argument("--collector", default="gdelt-type1")
     parser.add_argument("--exporter", default="gdelt-export")
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--latest-first", action="store_true",
+                        help="Prioritize live minutes and backfill backward between live batches")
     args = parser.parse_args()
     parse_minute(args.start)
     if not (1 <= args.batch_minutes <= 1440 and 0.01 <= args.shard_gib <= 8
@@ -332,6 +336,9 @@ def main():
             raise RuntimeError("A Hugging Face write token is required in the mounted secret file")
         hub = Hub(args.repo, token)
         hub.ensure_repo()
+        if args.latest_first:
+            from latest_first_worker import run_scheduler
+            return run_scheduler(args, hub)
         retry_path = args.state / "late-retries.json"
         schedule = read_json(retry_path) if retry_path.exists() else {}
         failures = 0
@@ -339,6 +346,8 @@ def main():
         while True:
             try:
                 remote, _ = hub.progress()
+                if remote and remote.get("schedule"):
+                    raise RuntimeError("Latest-first checkpoint requires --latest-first scheduling")
                 if remote and (remote.get("pipeline") != PIPELINE or remote.get("initial_start") != args.start):
                     raise RuntimeError("Remote checkpoint does not match configured pipeline/start")
                 now = datetime.now(timezone.utc)

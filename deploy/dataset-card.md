@@ -23,8 +23,8 @@ configs:
 - **Format:** Zstandard-compressed **Parquet only**, with small manifests and a coverage checkpoint.
 - **Columns:** `date`, `language`, `source_url`, `text`, `observation_id`, `type`, `metadata`.
 - **Metadata:** source-file timestamp, source checksum and reconstruction diagnostics. Observation IDs are stable for the same source group. No country, publisher, author or external enrichment.
-- **Coverage:** historical backfill starts at **2020-01-01 00:01 UTC** and is still in progress. See [progress.json](https://huggingface.co/datasets/openalphalab/gdelt-news/blob/main/progress.json) for published coverage and row counts; gaps are possible.
-- **Updates:** no 48-hour enrichment delay. After backfill catches up, the worker polls every **30 seconds** with a **one-minute safety margin**; upstream and processing time add latency.
+- **Coverage:** recent files get priority while historical backfill moves **backward toward 2020-01-01 00:01 UTC**. Previously uploaded history stays. Coverage is incomplete: see [progress.json](https://huggingface.co/datasets/openalphalab/gdelt-news/blob/main/progress.json) for the separate live and backfill cursors and row counts.
+- **Updates:** recent news does **not** wait for backfill. The worker checks new files between short historical chunks, polls every **30 seconds** when idle, and uses a **one-minute safety margin**. No 48-hour enrichment delay; upstream publication, processing and uploading add latency.
 - **Retrieve a timestamp:** for `20200101014700` (**2020-01-01 01:47 UTC**), select Parquet filenames whose `START-END` range covers it, then filter `metadata.source_minute == "20200101014700"`. [Python example below](#retrieve-a-timestamp-with-python).
 - **Dates:** `date` is GDELT's observation time; `metadata.source_minute` identifies the input file. Neither is a verified publication date.
 - **Download:** [browse Parquet files](https://huggingface.co/datasets/openalphalab/gdelt-news/tree/main/data), or use the [streaming and download examples](https://github.com/openalphalab/GDELT-News/blob/main/docs/dataset-guide.md#stream-without-downloading-the-archive). Public downloads need no token.

@@ -6,22 +6,27 @@ Multilingual news observations reconstructed from **both Type 1 and Type 2** GDE
 
 ## Coverage and status
 
-Backfill starts at **2020-01-01 00:01 UTC**, the earliest file documented by GDELT. **The full historical archive has not yet been published.** Read `progress.json` for the actual latest processed minute and published row count. A processed interval can contain gaps: source HTTP 404s are recorded in batch manifests, not invented as news.
+Historical coverage extends toward **2020-01-01 00:01 UTC**, the earliest file documented by GDELT. **The full historical archive has not yet been published.** Recent data and previously uploaded 2020 data can both be present while dates between them are still missing. Read `progress.json` for the separate live and backward cursors and published row count. A processed interval can contain gaps: source HTTP 404s are recorded in batch manifests, not invented as news.
 
-The persistent Alibaba VM works forward through history, then follows newly available source files. **There is no 48-hour enrichment delay.** Once caught up, the worker attempts the most recently completed source minute, uses a **one-minute safety margin**, and checks every **30 seconds**. It publishes one source minute per live batch. Actual latency includes upstream GDELT publication, download, reconstruction and upload time; it is not a guaranteed one-minute delivery service. Current news is not yet covered while the chronological backfill is still processing older dates.
+The persistent Alibaba VM gives **recent files priority** and works **backward through history** between live batches. **There is no 48-hour enrichment delay, and current news does not wait for the historical backfill.** The worker uses a **one-minute safety margin**, checks live work before each backward chunk and polls every **30 seconds** when idle. One coordinator reconstructs one input at a time and publishes atomically, with independent progress and retry state for live, historical and late-file work. Actual latency includes upstream publication, the current work unit, download, reconstruction and upload time; it is not a guaranteed one-minute delivery service.
 
-Historical batches normally cover up to six source hours, sealing at a collection-window boundary when compressed Parquet reaches 256 MiB or the VM approaches its disk reserve. Collection windows cover up to 15 source minutes, with four parallel downloads and one input reconstructed at a time; the size target can be exceeded by one window. Live files initially returning 404 go into a durable retry queue for **24 hours**, with per-file retry delays from 30 seconds to five minutes. Late arrivals are published in separate `-late.parquet` shards without rewinding the main cursor or blocking other available minutes. Older historical gaps or files published more than 24 hours late require a separate repair run.
+Backward chunks cover up to **15 source minutes**, with four parallel downloads and one input reconstructed at a time. Within each Parquet shard, source minutes remain chronological. The backward cursor moves to the minute before the published chunk until it meets the already-published historical prefix; live and backward ranges do not overlap. Existing larger chronological shards remain valid. Live files initially returning 404 go into a durable retry queue for **24 hours**, with per-file retry delays from 30 seconds to five minutes. Late arrivals use separate `-late.parquet` shards without rewinding either cursor. Older gaps or files arriving beyond the retry window require a separate repair run.
 
 The checkpoint fields mean:
 
 | Field | Meaning |
 | --- | --- |
-| `initial_start` | Beginning of the chronological backfill |
-| `last_end` | Latest source minute processed by forward collection; gaps are possible |
-| `next_minute` | Next source minute to attempt |
+| `initial_start` | Earliest requested historical source minute |
+| `schedule` | `live-priority-backward-v1` after the first latest-first publication |
+| `live_start` | Fixed boundary between live collection and backward history |
+| `live_next_minute` / `next_minute` | Next source minute for live collection; not a claim that all older dates are present |
+| `last_end` | Latest source minute processed by live collection; gaps are possible |
+| `backfill_next_end` | Newest historical minute still awaiting backward collection |
+| `backfill_floor` | First minute after the retained, already-published historical prefix; backfill stops below this |
+| `legacy_last_end` | Last source minute in the historical prefix retained when scheduling changed |
 | `total_observations` | Total published Parquet rows, including successfully repaired late files |
 | `pending_missing_minutes` | Recent missing minutes awaiting retry; entries expire after the retry window |
-| `last_action` | `forward` collection or a late-file `repair` |
+| `last_action` | `live`, `backfill` or a late-file `repair`; older checkpoints use `forward` |
 | `last_manifest` | Manifest for the most recent publication, which may be a repair |
 | `published_bytes` | Published artifact bytes on the current branch, not total storage across Git history |
 | `total_quarantined_metadata_records` | Source fragments excluded for invalid/missing identity or position metadata; not an article count |
