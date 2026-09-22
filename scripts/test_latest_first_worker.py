@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+import httpx
 
 import compact_worker as cw
 import latest_first_worker as lf
@@ -30,6 +33,71 @@ def item(root, start, end, kind, missing=()):
 
 
 class LatestFirstTests(unittest.TestCase):
+    def test_missing_probes_reuse_checkpoint_and_quota_until_refresh(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = settings(Path(d))
+            args.once, args.poll_seconds, args.max_hub_storage_gb = False, 30, 7000
+            hub = FakeHub()
+            hub.state = lf.bootstrap(args, None, NOW)
+            hub.state.update(live_next_minute="20260922120000", backfill_next_end=lf.previous(cw.FIRST),
+                pending_missing_minutes=[cw.stamp(NOW.replace(second=0) - timedelta(minutes=i)) for i in range(1, 121)])
+            probes, ticks = 0, 0
+            def fake_collect(command):
+                nonlocal probes, ticks
+                probes += 1
+                if probes == 100:
+                    raise KeyboardInterrupt
+                if probes in (50, 75):
+                    ticks += 31
+                archive = Path(command[command.index("--archive") + 1])
+                collection_result(archive.parent.parent, command)
+            with patch("latest_first_worker.datetime") as clock, \
+                    patch("latest_first_worker.time.monotonic", side_effect=lambda: ticks), \
+                    patch("compact_worker.run", side_effect=fake_collect), patch("compact_worker.check_space"), \
+                    patch("compact_worker.check_upload_budget") as quota, \
+                    patch.object(hub, "progress", wraps=hub.progress) as reads:
+                clock.now.return_value = NOW
+                with self.assertRaises(KeyboardInterrupt):
+                    lf.run_scheduler(args, hub)
+                self.assertEqual(reads.call_count, 3)
+                self.assertEqual(quota.call_count, 3)
+                self.assertEqual(hub.uploads, 0)
+
+    def test_rate_limit_headers_use_longest_reset_and_safe_fallback(self):
+        for headers, expected in [({"RateLimit": '"api";r=0;t=27'}, 28),
+                ({"Retry-After": "60", "RateLimit": '"api";r=0;t=27'}, 61),
+                ({"Retry-After": "Tue, 22 Sep 2026 12:01:31 GMT"}, 61),
+                ({"Retry-After": "invalid", "RateLimit": "invalid"}, 301)]:
+            with self.subTest(headers=headers):
+                exc = SimpleNamespace(response=httpx.Response(429, headers=headers))
+                self.assertEqual(lf.rate_limit_delay(exc, NOW), expected)
+        self.assertIsNone(lf.rate_limit_delay(SimpleNamespace(response=httpx.Response(503)), NOW))
+
+    def test_rate_limit_stops_all_hub_work_and_cooldown_survives_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = settings(Path(d))
+            args.once, args.poll_seconds, args.max_hub_storage_gb = False, 30, 7000
+            hub = FakeHub()
+            error = RuntimeError("Too many requests")
+            error.response = httpx.Response(429, headers={"RateLimit": '"api";r=0;t=120'})
+            with patch("latest_first_worker.datetime") as clock, \
+                    patch("latest_first_worker.time.sleep", side_effect=KeyboardInterrupt) as sleep, \
+                    patch.object(hub, "progress", side_effect=error) as reads, \
+                    patch("compact_worker.build_batch") as build:
+                clock.now.return_value = NOW
+                with self.assertRaises(KeyboardInterrupt):
+                    lf.run_scheduler(args, hub)
+                self.assertEqual(reads.call_count, 1)
+                build.assert_not_called()
+                saved = cw.read_json(args.state / "scheduler-retries.json")
+                self.assertEqual(saved["hub"]["next_check"], NOW.timestamp() + 121)
+                self.assertEqual(cw.read_json(args.state / "status.json")["http_status"], 429)
+                self.assertEqual(sleep.call_args.args, (30,))
+                reads.reset_mock()
+                with self.assertRaises(KeyboardInterrupt):
+                    lf.run_scheduler(args, hub)
+                reads.assert_not_called()
+
     def test_bootstrap_preserves_old_rows_and_defines_disjoint_seam(self):
         args = settings(Path("unused"))
         old = {"pipeline": cw.PIPELINE, "initial_start": cw.FIRST,

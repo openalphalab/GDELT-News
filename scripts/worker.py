@@ -24,6 +24,7 @@ from huggingface_hub import HfApi, CommitOperationAdd, hf_hub_download
 from huggingface_hub.errors import EntryNotFoundError
 
 import enrich_metadata as enrich
+from hub_traffic import install_hub_request_limiter
 
 LOG = logging.getLogger("gdelt-worker")
 FIRST = "20200101000100"
@@ -264,6 +265,7 @@ def build_batch(args, start, maximum_end):
 
 class Hub:
     def __init__(self, repo, token):
+        install_hub_request_limiter()
         self.repo, self.token = repo, token
         self.api = HfApi(token=token)
 

@@ -122,6 +122,16 @@ shards; their manifests record `kind: repair`. Recovery never rewinds the forwar
 cursor. Repeated 404 probes do not create remote commits.
 Older gaps and arrivals beyond the retry window need a separate repair run.
 
+Missing-source retries reuse the Hub checkpoint and preflight quota result for
+up to 30 seconds. Every publication still reads fresh progress, checks storage
+and uses an atomic parent-commit guard. SDK requests to the Hub are paced at one
+per second (about 300 per five minutes versus the observed 1,000-request quota),
+including internal commit calls. Bulk CDN/Xet transfers are unaffected. The
+client waits for reset when the response headers report 100 or fewer remaining
+requests, leaving headroom for other activity. HTTP 429 pauses all lanes until the Hub's
+advertised reset time; this cooldown survives restarts. Worker status and logs
+include the HTTP status and cooldown duration without exposing credentials.
+
 A new source interval with zero rows updates only the shared `progress.json`:
 no Parquet and no per-batch manifest is uploaded. This applies to missing files
 and valid inputs containing no reconstructable observations. A temporary local

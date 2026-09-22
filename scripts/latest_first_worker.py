@@ -5,10 +5,12 @@ import logging
 import time
 
 import compact_worker as cw
+from hub_traffic import rate_limit_delay
 
 LOG = logging.getLogger("gdelt-latest-first")
 SCHEDULE = "live-priority-backward-v1"
 LANES = ("live", "backfill", "repair")
+HUB_REFRESH_SECONDS = 30
 
 
 def previous(minute):
@@ -195,12 +197,27 @@ def run_scheduler(args, hub):
     schedule = cw.read_json(retry_path) if retry_path.exists() else {}
     retries = cw.read_json(retry_state) if retry_state.exists() else {}
     last_lane, global_failures, repair_streak = None, 0, 0
+    remote, remote_checked_at = None, None
     while True:
         lane = None
         try:
+            now = datetime.now(timezone.utc)
+            cooldown = retries.get("hub", {}).get("next_check", 0) - now.timestamp()
+            if cooldown > 0:
+                if args.once:
+                    return
+                time.sleep(min(args.poll_seconds, cooldown))
+                continue
+            retries.pop("hub", None)
             drain_legacy(args, hub)
-            remote, _ = hub.progress()
-            validate_remote(remote, args.start)
+            # Missing-source probes do not change the Hub. Reuse a short-lived
+            # snapshot instead of spending two API requests on every 404. Each
+            # publication still fetches fresh progress and checks quota itself.
+            if remote_checked_at is None or time.monotonic() - remote_checked_at >= HUB_REFRESH_SECONDS:
+                remote, _ = hub.progress()
+                validate_remote(remote, args.start)
+                cw.check_upload_budget(hub, [], args.max_hub_storage_gb)
+                remote_checked_at = time.monotonic()
             now = datetime.now(timezone.utc)
             if not (remote or {}).get("schedule"):
                 if not initial_path.exists():
@@ -237,7 +254,6 @@ def run_scheduler(args, hub):
                 "live_next_minute": effective["live_next_minute"],
                 "backfill_next_end": effective["backfill_next_end"], "lane_retries": retries,
                 "checked_at": now.isoformat()})
-            cw.check_upload_budget(hub, [], args.max_hub_storage_gb)
             record = cw.build_batch(lane_args, *plan)
             if lane == "backfill" and record["end"] != end:
                 raise RuntimeError("Backward chunk sealed early; retaining it to avoid skipping its tail")
@@ -249,6 +265,7 @@ def run_scheduler(args, hub):
                 progress, revision = publish(hub, lane_args.state / "batch", record, args.start, initial,
                     args.retry_missing_hours, maximum_gb=args.max_hub_storage_gb,
                     protected_missing=(active_repair[0],) if active_repair else ())
+                remote, remote_checked_at = progress, time.monotonic()
                 cw.write_json(args.state / "checkpoint.json", {**progress, "commit": revision})
                 for minute in record["missing_minutes"]:
                     if minute in progress["pending_missing_minutes"]:
@@ -275,7 +292,16 @@ def run_scheduler(args, hub):
             if args.once:
                 raise
             now = datetime.now(timezone.utc)
-            if lane:
+            remote_checked_at = None  # Also recover an uncertain commit response.
+            response = getattr(exc, "response", None)
+            http_status = getattr(response, "status_code", None)
+            cooldown = rate_limit_delay(exc, now)
+            if cooldown is not None:
+                # A shared API limit must pause every lane, including source
+                # retries. Persist the reset so a restart does not hammer it.
+                retries["hub"] = {"next_check": now.timestamp() + cooldown, "http_status": 429}
+                cw.write_json(retry_state, retries)
+            elif lane:
                 attempts = retries.get(lane, {}).get("attempts", 0) + 1
                 retries[lane] = {"attempts": attempts, "next_check": now.timestamp()
                                 + min(900, 15 * 2 ** min(attempts, 6))}
@@ -283,10 +309,12 @@ def run_scheduler(args, hub):
             else:
                 global_failures += 1
             detail = str(exc) if type(exc) in (RuntimeError, ValueError) else "See source-stage logs or HTTP status"
-            LOG.error("work_pending lane=%s error_type=%s detail=%s; data retained", lane, type(exc).__name__, detail)
+            LOG.error("work_pending lane=%s error_type=%s http_status=%s cooldown_seconds=%s detail=%s; data retained",
+                      lane, type(exc).__name__, http_status, cooldown, detail)
             cw.write_json(args.state / "status.json", {"state": "retrying", "schedule": SCHEDULE,
-                "lane": lane, "error_type": type(exc).__name__, "lane_retries": retries,
+                "lane": lane, "error_type": type(exc).__name__, "http_status": http_status,
+                "cooldown_seconds": cooldown, "lane_retries": retries,
                 "checked_at": now.isoformat()})
             # A failed historical minute must not impose its backoff on live work.
-            if lane is None:
+            if lane is None and cooldown is None:
                 time.sleep(min(900, 15 * 2 ** min(global_failures, 6)))
