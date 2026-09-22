@@ -147,6 +147,31 @@ print(result.slice(0, 1).to_pylist())
 
 The example returned 2,894 observations from both types at dataset revision `01a64e7cb618206ddfaf263bdd8161c14e180a1d`. Pin that revision to reproduce this result; the example otherwise uses the latest published snapshot.
 
+## Filter by datetime and language
+
+- Run the timestamp example above first. This filters its downloaded observations by `date` and `language`.
+- Times are UTC: `start` is inclusive and `end` is exclusive. Change `stamp` in the first example to retrieve a different source minute.
+- Use the exact language code, for example `en`, `fr`, `zh` or `zh-TW`. This example filters the selected source minute, not the entire archive.
+
+```python
+from datetime import datetime, timezone
+import pyarrow as pa
+import pyarrow.dataset as ds
+
+start = datetime(2020, 1, 1, 1, 47, tzinfo=timezone.utc)
+end = datetime(2020, 1, 1, 1, 48, tzinfo=timezone.utc)
+language = "en"
+
+observed_at = ds.field("date").cast(pa.timestamp("us", tz="UTC"))
+filtered = ds.dataset(result).to_table(filter=(
+    (observed_at >= start)
+    & (observed_at < end)
+    & (ds.field("language") == language)
+))
+print(filtered.num_rows)
+print(filtered.slice(0, 1).to_pylist())
+```
+
 ## Download one shard
 
 ```python
