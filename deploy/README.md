@@ -122,6 +122,12 @@ shards; their manifests record `kind: repair`. Recovery never rewinds the forwar
 cursor. Repeated 404 probes do not create remote commits.
 Older gaps and arrivals beyond the retry window need a separate repair run.
 
+Retry priority uses a rolling 15-minute freshness window, not the fixed startup
+boundary. The newest due source minute wins within that window. When both ages
+are waiting, three fresh probes are followed by one older gap and a backward
+chunk. Existing retry delays still apply; an in-flight reconstruction is retained.
+Older missing live minutes therefore cannot bury newly published source files.
+
 Missing-source retries reuse the Hub checkpoint and preflight quota result for
 up to 30 seconds. Every publication still reads fresh progress, checks storage
 and uses an atomic parent-commit guard. SDK requests to the Hub are paced at one

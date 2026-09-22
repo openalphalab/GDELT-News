@@ -189,6 +189,43 @@ class LatestFirstTests(unittest.TestCase):
             remote.update(live_next_minute="20260922120000", pending_missing_minutes=["20260922000100"])
             self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", 1)[2], "backfill")
 
+    def test_old_live_gaps_cannot_bury_newly_published_minutes(self):
+        args = settings(Path("unused"))
+        remote = lf.bootstrap(args, None, NOW)
+        remote['live_start'] = '20260922004200'
+        old = [cw.stamp(NOW.replace(hour=9, minute=0, second=0) + timedelta(minutes=i)) for i in range(60)]
+        fresh = ['20260922115500', '20260922115600', '20260922115700']
+        remote.update(live_next_minute='20260922120000', pending_missing_minutes=old + fresh)
+        schedule = {m: {'next_check': 0} for m in old}
+        schedule.update({m: {'next_check': NOW.timestamp() - 1} for m in fresh})
+        self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'backfill', 0),
+                         (fresh[-1], fresh[-1], 'repair'))
+        # Most recent due source wins; not-yet-due retries still respect backoff.
+        schedule[fresh[-1]]['next_check'] = NOW.timestamp() + 30
+        self.assertEqual(lf.plan_for_lane(args, remote, schedule, NOW, 'repair')[0], fresh[-2])
+        # The fourth slot cannot starve older gaps, including historical ones.
+        self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', 3),
+                         (old[0], old[0], 'repair'))
+        self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', 4)[2], 'backfill')
+        remote['live_next_minute'] = '20260922115900'
+        self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', 3)[2], 'live')
+
+    def test_freshness_window_moves_and_pending_reconstruction_is_preserved(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = settings(Path(d))
+            remote = lf.bootstrap(args, None, NOW)
+            older, fresh = '20260922114000', '20260922115500'
+            remote.update(live_next_minute='20260922120000', pending_missing_minutes=[older, fresh])
+            schedule = {older: {'next_check': 0}, fresh: {'next_check': NOW.timestamp() - 1}}
+            self.assertEqual(lf.plan_for_lane(args, remote, schedule, NOW, 'repair')[0], fresh)
+            # Once both age out, restore oldest-due ordering instead of treating
+            # everything after a days-old startup seam as fresh forever.
+            self.assertEqual(lf.plan_for_lane(args, remote, schedule, NOW + timedelta(minutes=20), 'repair')[0], older)
+            cw.write_json(args.state / 'repair/batch/request.json', {
+                'pipeline': cw.PIPELINE, 'kind': 'repair', 'start': older, 'maximum_end': older})
+            self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'backfill', 0),
+                             (older, older, 'repair'))
+
     def test_response_loss_then_other_lane_commit_never_duplicates(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

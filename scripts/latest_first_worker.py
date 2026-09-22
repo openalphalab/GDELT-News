@@ -11,6 +11,7 @@ LOG = logging.getLogger("gdelt-latest-first")
 SCHEDULE = "live-priority-backward-v1"
 LANES = ("live", "backfill", "repair")
 HUB_REFRESH_SECONDS = 30
+FRESH_RETRY_MINUTES = 15
 
 
 def previous(minute):
@@ -41,7 +42,7 @@ def bootstrap(args, remote, now):
     return result
 
 
-def plan_for_lane(args, remote, schedule, now, lane):
+def plan_for_lane(args, remote, schedule, now, lane, prefer_older=False):
     cutoff = cw.stamp(now.replace(second=0, microsecond=0) - timedelta(minutes=args.lag_minutes))
     if lane == "live":
         start = remote["live_next_minute"]
@@ -61,10 +62,15 @@ def plan_for_lane(args, remote, schedule, now, lane):
         due = [m for m in cw.pending_within_window(remote, now, args.retry_missing_hours)
                if schedule.get(m, {}).get("next_check", 0) <= now.timestamp()]
         if due:
-            # Do not bury delayed current files behind hundreds of normal gaps
-            # encountered while traversing yesterday's historical intervals.
-            recent = [m for m in due if m >= remote["live_start"]]
-            minute = min(recent or due, key=lambda m: (schedule.get(m, {}).get("next_check", 0), m))
+            # The startup seam is a coverage boundary, not a measure of freshness.
+            # Use a rolling window so old live-lane 404s cannot bury new arrivals.
+            fresh_start = cw.stamp(now - timedelta(minutes=FRESH_RETRY_MINUTES))
+            fresh = [m for m in due if m >= fresh_start]
+            older = [m for m in due if m < fresh_start]
+            if fresh and not (prefer_older and older):
+                minute = max(fresh)
+            else:
+                minute = min(older, key=lambda m: (schedule.get(m, {}).get("next_check", 0), m))
             return minute, minute, lane
         return None
     raise ValueError("Unknown scheduling lane")
@@ -83,17 +89,22 @@ def pending_plan(state, lane):
 
 
 def choose_work(args, remote, schedule, retries, now, last_lane, repair_streak=None):
-    # Latest files always win. Allow four recent recovery probes between backward
-    # chunks, but only one historical probe. A live interruption keeps this budget.
+    # Latest files always win. Three fresh probes, then one older gap, then a
+    # backward chunk keep both recovery ages progressing. A live interruption
+    # keeps this budget. Without fresh work, one older probe precedes backfill.
     streak = int(last_lane == "repair") if repair_streak is None else repair_streak
-    repair = pending_plan(args.state, "repair") or plan_for_lane(args, remote, schedule, now, "repair")
-    recent_repair = repair is not None and repair[0] >= remote["live_start"]
+    pending = pending_plan(args.state, "repair")
+    repair = pending or plan_for_lane(args, remote, schedule, now, "repair")
+    recent_repair = repair is not None and repair[0] >= cw.stamp(now - timedelta(minutes=FRESH_RETRY_MINUTES))
+    if not pending and streak % 4 == 3:
+        repair = plan_for_lane(args, remote, schedule, now, "repair", prefer_older=True)
     yield_to_backfill = streak >= (4 if recent_repair else 1)
     order = ("live", "backfill", "repair") if yield_to_backfill else ("live", "repair", "backfill")
     for lane in order:
         if retries.get(lane, {}).get("next_check", 0) > now.timestamp():
             continue
-        plan = pending_plan(args.state, lane) or plan_for_lane(args, remote, schedule, now, lane)
+        plan = repair if lane == "repair" else (pending_plan(args.state, lane)
+                                               or plan_for_lane(args, remote, schedule, now, lane))
         if plan:
             return plan
     return None
