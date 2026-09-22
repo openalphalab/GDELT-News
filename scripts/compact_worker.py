@@ -1,6 +1,7 @@
-"""Four-column Parquet publication, historical backfill and prompt live collection."""
+"""Compact Parquet with native metadata, historical backfill and prompt live collection."""
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import logging
 import os
@@ -16,14 +17,44 @@ from worker import (FIRST, GIB, Hub, check_space, file_record, parse_minute,
 from enrich_metadata import digest
 
 LOG = logging.getLogger("gdelt-compact")
-PIPELINE = "gdelt-types12-parquet-v2"
+PIPELINE = "gdelt-types12-parquet-native-v3"
+NATIVE_FIELDS = [
+    ("source_minute", pa.string()), ("raw_sha256", pa.string()),
+    ("id", pa.int64()), ("type_id", pa.int64()), ("fragments", pa.int64()),
+    ("primary_fragments", pa.int64()), ("assembly", pa.string()),
+    ("position_joins", pa.int64()), ("bounded_fallback", pa.bool_()), ("search", pa.string()),
+]
+BASE_COLUMNS = ["date", "language", "source_url", "text"]
 SCHEMA = pa.schema([("date", pa.string()), ("language", pa.string()),
-                    ("source_url", pa.string()), ("text", pa.string())])
+                    ("source_url", pa.string()), ("text", pa.string()),
+                    pa.field("observation_id", pa.string(), nullable=False),
+                    pa.field("type", pa.int8(), nullable=False),
+                    ("metadata", pa.struct(NATIVE_FIELDS))])
 
 
-def parquet_row(row):
+def observation_id(row, minute, raw_sha):
+    """Identify the source group, independently of text assembly and row order."""
+    parse_minute(minute)
+    if (not isinstance(raw_sha, str) or len(raw_sha) != 64
+            or any(c not in "0123456789abcdef" for c in raw_sha)
+            or type(row.get("type")) is not int or row["type"] not in (1, 2)
+            or any(not isinstance(row.get(k), str) or not row[k].strip()
+                   for k in ("observed_at", "lang", "url"))):
+        raise ValueError("Incomplete or invalid observation identity")
+    identity = ["gdelt-webngrams-observation-v1", minute, raw_sha, row["type"],
+                row["observed_at"], row["lang"], row["url"]]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf8")).hexdigest()
+
+
+def parquet_row(row, minute=None, raw_sha=None):
+    metadata = {name: row.get(name) for name, _ in NATIVE_FIELDS}
+    metadata["source_minute"] = minute or row.get("source_minute")
+    metadata["raw_sha256"] = raw_sha or row.get("raw_sha256")
     return {"date": row["observed_at"], "language": row["lang"],
-            "source_url": row["url"], "text": row["text"]}
+            "source_url": row["url"], "text": row["text"], "type": row["type"],
+            "observation_id": observation_id(row, metadata["source_minute"], metadata["raw_sha256"]),
+            "metadata": metadata}
 
 
 def verify_local(batch, record):
@@ -104,9 +135,13 @@ def build_batch(args, start, maximum_end, kind="forward"):
                         header = json.loads(next(stream))["meta"]
                         if header["raw_sha256"] != raw_sha or header["profile"] != profile:
                             raise RuntimeError("Export source/profile mismatch")
-                        rows, minute_rows = [], 0
+                        rows, minute_rows, identities = [], 0, set()
                         for line in stream:
-                            rows.append(parquet_row(json.loads(line)))
+                            row = parquet_row(json.loads(line), minute, raw_sha)
+                            if row["observation_id"] in identities:
+                                raise RuntimeError("Duplicate source observation identity")
+                            identities.add(row["observation_id"])
+                            rows.append(row)
                             minute_rows += 1
                             if len(rows) == 512:
                                 writer.write_table(pa.Table.from_pylist(rows, schema=SCHEMA))
@@ -129,7 +164,7 @@ def build_batch(args, start, maximum_end, kind="forward"):
     suffix = "-late" if kind == "repair" else ""
     prefix = f"{start[:4]}/{start[4:6]}/{start[6:8]}/{start}-{minute}{suffix}"
     files = [{**file_record(parquet, f"data/{prefix}.parquet"), "local": parquet.name}]
-    record = {"schema": 2, "pipeline": PIPELINE, "kind": kind, "start": start, "end": minute,
+    record = {"schema": 3, "pipeline": PIPELINE, "kind": kind, "start": start, "end": minute,
               "next_minute": successor(minute), "observations": observations,
               "code_revision": os.environ.get("GDELT_CODE_REVISION", "unknown"),
               "missing_minutes": [x["minute"] for x in outcomes if x["status"] == "missing"],
@@ -205,7 +240,7 @@ def publish(hub, batch, record, initial_start, retry_hours=24, now=None, maximum
     earliest = stamp(now - timedelta(hours=retry_hours))
     pending.update(m for m in record["missing_minutes"] if m >= earliest)
     pending = sorted(m for m in pending if m >= earliest)
-    progress = {"schema": 2, "pipeline": PIPELINE, "initial_start": initial_start,
+    progress = {"schema": 3, "pipeline": PIPELINE, "initial_start": initial_start,
                 "next_minute": next_minute if kind == "repair" else record["next_minute"],
                 "last_end": remote["last_end"] if kind == "repair" else record["end"],
                 "last_action": kind, "pending_missing_minutes": pending,

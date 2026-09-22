@@ -1,10 +1,12 @@
 # GDELT Type 1 and Type 2 news recovery
 
 **Public dataset:** [openalphalab/gdelt-news on Hugging Face](https://huggingface.co/datasets/openalphalab/gdelt-news)
-contains compact Parquet with exactly `date`, `language`, `source_url` and `text`,
-plus small provenance manifests and a live coverage checkpoint. Both reconstruction
-types remain included. Public raw evidence, duplicate JSONL and daily metadata
-enrichment are omitted to reduce storage and avoid the former 48-hour wait.
+contains compact Parquet with `date`, `language`, `source_url`, `text`,
+`observation_id`, `type` and a `metadata` struct containing native source and
+reconstruction diagnostics. Both reconstruction types remain included. It uses
+only ngram data: no country, publisher, author or external enrichment. Small
+provenance manifests and a live coverage checkpoint accompany the Parquet shards.
+Public raw evidence and duplicate JSONL are omitted. There is no 48-hour wait.
 See the dataset card for schemas and download examples, and
 [deploy/README.md](deploy/README.md) for the resumable Linux backfill worker.
 

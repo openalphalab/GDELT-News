@@ -18,10 +18,8 @@ from worker import Hub, PIPELINE as LEGACY_PIPELINE
 
 def convert_parquet(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
-    table = pq.read_table(source, columns=["observed_at", "lang", "url", "text"])
-    compact = table.rename_columns(cw.SCHEMA.names)
-    if compact.schema != cw.SCHEMA:
-        raise RuntimeError("Unexpected source schema")
+    table = pq.read_table(source)
+    compact = cw.pa.Table.from_pylist([cw.parquet_row(row) for row in table.to_pylist()], schema=cw.SCHEMA)
     pq.write_table(compact, destination, compression="zstd", compression_level=9,
                    use_dictionary=["language"], row_group_size=512)
     actual = pq.read_table(destination)
@@ -61,7 +59,7 @@ def migrate(hub, stage, maximum_gb, apply=False):
         rows += count
         data_file = {**cw.file_record(destination, shard["path"]), "local": shard["path"]}
         files.append(data_file)
-        manifest = {**original, "schema": 2, "pipeline": cw.PIPELINE, "kind": "forward",
+        manifest = {**original, "schema": 3, "pipeline": cw.PIPELINE, "kind": "forward",
                     "files": [data_file], "code_revision": os.environ.get("GDELT_CODE_REVISION", "unknown"),
                     "migrated_from": {"revision": parent, "pipeline": LEGACY_PIPELINE,
                                       "parquet_sha256": shard["sha256"], "code_revision": original.get("code_revision")}}
@@ -75,7 +73,7 @@ def migrate(hub, stage, maximum_gb, apply=False):
         raise RuntimeError("Migration would lose or duplicate published observations")
     deleted = sorted(n for n in names if n.startswith(("evidence/", "llm/")))
     latest_manifest = next(f for f in files if f["path"] == progress["last_manifest"])
-    updated = {**progress, "schema": 2, "pipeline": cw.PIPELINE, "last_action": "forward",
+    updated = {**progress, "schema": 3, "pipeline": cw.PIPELINE, "last_action": "forward",
                "pending_missing_minutes": [], "last_manifest_sha256": latest_manifest["sha256"],
                "published_bytes": sum(f["bytes"] for f in files),
                "updated_at": datetime.now(timezone.utc).isoformat(), "migrated_from_commit": parent}
@@ -92,7 +90,7 @@ def migrate(hub, stage, maximum_gb, apply=False):
     ops.append(CommitOperationAdd(path_in_repo="progress.json", path_or_fileobj=stage / "progress.json"))
     ops.append(CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=Path(__file__).parents[1] / "deploy/dataset-card.md"))
     result = hub.api.create_commit(hub.repo, repo_type="dataset", parent_commit=parent,
-                                  operations=ops, commit_message="Replace enriched archive with four-column Parquet")
+                                  operations=ops, commit_message="Replace enriched archive with compact native-metadata Parquet")
     hub.verify(files, result.oid)
     current = set(hub.api.list_repo_files(hub.repo, repo_type="dataset", revision=result.oid))
     if any(name in current for name in deleted):

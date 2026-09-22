@@ -5,9 +5,11 @@ inbound network port. It uses up to 4 CPUs and 12 GiB memory, keeps a 12 GiB dis
 reserve, and stores at most one unpublished batch plus its verified caches.
 The server's existing operating system need not be replaced.
 
-The Docker entrypoint is `scripts/compact_worker.py`. Public data has exactly four
-columns: `date`, `language`, `source_url`, `text`. Both Type 1 and Type 2 are included.
-There is no country field or daily metadata dependency. The old enriched worker and
+The Docker entrypoint is `scripts/compact_worker.py`. Public data has seven
+columns: `date`, `language`, `source_url`, `text`, `observation_id`, `type` and
+`metadata` (a struct of native source/reconstruction diagnostics). Both Type 1
+and Type 2 are included. Only ngram data is used: no country, publisher, author
+or external metadata dependency. The old enriched worker and
 enrichment scripts remain available for separate use, but are not deployed.
 
 Historical source minutes can exceed the CLI's conservative default input size.
@@ -87,6 +89,14 @@ shards and removes evidence/JSONL from the current branch in one commit. Selecte
 fields and row counts are verified unchanged. It preserves earlier Git history.
 An existing unpublished v1 batch must have its request explicitly converted to the
 new pipeline before restarting; the compact worker refuses mixed checkpoints.
+
+For the already-published four-column v2 dataset, stop the collector and use
+`scripts/upgrade_native_metadata.py --apply`. This restores native fields from
+verified original exports or reconstructs the same source bytes, checking the
+four core fields, row order, row counts and unique observation IDs before one
+atomic commit. All shards receive the same v3 schema. Existing unfinished v2
+requests must be explicitly adopted after verifying the remote cursor; never
+discard an unverified pending publication. The upgrade retains Git history.
 
 Only one writer should publish this dataset. A Linux file lock prevents two local
 workers, and commit parent checking prevents a concurrent remote writer from

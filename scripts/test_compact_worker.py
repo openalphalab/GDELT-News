@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pyarrow.parquet as pq
 import compact_worker as cw
 from migrate_compact import convert_parquet
+from upgrade_native_metadata import verify_preserved
 from test_worker import FakeHub, publication
 
 
@@ -31,18 +32,21 @@ class CompactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             original = cw.pa.Table.from_pylist([
-                {"observed_at": "2020-01-01T00:01:00Z", "lang": "ja", "url": "https://example.jp/記事", "text": "日本語\n🙂", "metadata_json": "{}"},
-                {"observed_at": "2020-01-01T00:01:00Z", "lang": "en", "url": "https://example.org", "text": "Same URL observations stay separate", "metadata_json": "{}"}])
+                {"source_minute": cw.FIRST, "raw_sha256": "a" * 64, "type": 2, "observed_at": "2020-01-01T00:01:00Z", "lang": "ja", "url": "https://example.jp/記事", "text": "日本語\n🙂", "metadata_json": "{}"},
+                {"source_minute": cw.FIRST, "raw_sha256": "a" * 64, "type": 1, "observed_at": "2020-01-01T00:01:00Z", "lang": "en", "url": "https://example.org", "text": "Same URL observations stay separate", "metadata_json": "{}"}])
             pq.write_table(original, root / "old.parquet")
             count = convert_parquet(root / "old.parquet", root / "new.parquet")
             self.assertEqual(count, 2)
-            self.assertTrue(pq.read_table(root / "new.parquet").equals(original.select(["observed_at", "lang", "url", "text"]).rename_columns(cw.SCHEMA.names)))
+            converted = pq.read_table(root / "new.parquet")
+            self.assertTrue(converted.select(cw.BASE_COLUMNS).equals(original.select(["observed_at", "lang", "url", "text"]).rename_columns(cw.BASE_COLUMNS)))
+            self.assertNotIn("country", converted["metadata"].to_pylist()[0])
 
     def test_projection_preserves_dates_and_multiscript_text_exactly(self):
         row = {"observed_at": "2020-01-01T00:01:00.000Z", "lang": "zh",
-               "text": "中文\n\nภาษาไทย 👩🏽‍💻", "url": "https://example.org", "metadata": {"country": "XX"}}
-        projected = cw.parquet_row(row)
-        self.assertEqual(set(projected), {"date", "language", "source_url", "text"})
+               "text": "中文\n\nภาษาไทย 👩🏽‍💻", "url": "https://example.org", "metadata": {"country": "XX"},
+               "type": 2, "fragments": 7, "assembly": "estimated", "bounded_fallback": True}
+        projected = cw.parquet_row(row, cw.FIRST, "a" * 64)
+        self.assertEqual(set(projected), {"date", "language", "source_url", "text", "observation_id", "type", "metadata"})
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "sample.parquet"
             pq.write_table(cw.pa.Table.from_pylist([projected], schema=cw.SCHEMA), path)
@@ -51,6 +55,34 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(actual["date"], row["observed_at"])
         self.assertEqual(actual["language"], row["lang"])
         self.assertEqual(actual["source_url"], row["url"])
+        self.assertEqual(actual["type"], 2)
+        self.assertEqual(actual["metadata"]["fragments"], 7)
+        self.assertEqual(actual["metadata"]["raw_sha256"], "a" * 64)
+        self.assertNotIn("country", actual["metadata"])
+
+    def test_identity_stable_across_reassembly_but_distinct_for_source_groups(self):
+        row = {"observed_at": "2020-01-01T00:01:00Z", "lang": "zh", "url": "https://example.org/中文", "type": 2, "text": "before", "id": 1}
+        expected = cw.observation_id(row, cw.FIRST, "a" * 64)
+        self.assertEqual(len(expected), 64)
+        self.assertEqual(expected, cw.observation_id({**row, "id": 999, "text": "after"}, cw.FIRST, "a" * 64))
+        alternatives = [cw.observation_id({**row, **change}, cw.FIRST, "a" * 64)
+                        for change in ({"type": 1}, {"lang": "ja"}, {"url": "https://other.org"}, {"observed_at": "2020-01-01T00:02:00Z"})]
+        alternatives += [cw.observation_id(row, cw.successor(cw.FIRST), "a" * 64),
+                         cw.observation_id(row, cw.FIRST, "b" * 64)]
+        self.assertNotIn(expected, alternatives)
+        self.assertEqual(len(set(alternatives)), len(alternatives))
+        for change in ({"type": 0}, {"type": True}, {"url": ""}, {"lang": None}):
+            with self.assertRaises(ValueError):
+                cw.observation_id({**row, **change}, cw.FIRST, "a" * 64)
+
+    def test_upgrade_rejects_changed_text_even_with_same_row_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            old, new = Path(d) / "old.parquet", Path(d) / "new.parquet"
+            row = {"date": "2020-01-01", "language": "zh", "source_url": "https://example.org", "text": "中文"}
+            pq.write_table(cw.pa.Table.from_pylist([row]), old)
+            pq.write_table(cw.pa.Table.from_pylist([{**row, "text": "changed"}]), new)
+            with self.assertRaisesRegex(RuntimeError, "changed existing"):
+                verify_preserved(old, new)
 
     def test_near_live_uses_last_complete_minute_and_one_minute_shards(self):
         now = datetime(2026, 9, 22, 12, 0, 31, tzinfo=timezone.utc)
@@ -176,7 +208,7 @@ class CompactTests(unittest.TestCase):
                     output = Path(command[command.index("--output-directory") + 1])
                     output.mkdir()
                     header = {"meta": {"raw_sha256": raw_sha, "profile": "current", "observations": 1}}
-                    row = {"observed_at": "2020-01-01T00:01:00Z", "lang": "zh", "url": "https://example.org/article", "text": "中文 news"}
+                    row = {"type": 2, "observed_at": "2020-01-01T00:01:00Z", "lang": "zh", "url": "https://example.org/article", "text": "中文 news"}
                     observations = output / "observations.jsonl"
                     observations.write_text(json.dumps(header) + "\n" + json.dumps(row) + "\n")
                     cw.write_json(output / "export-report.json", {"files": [{"name": observations.name, "sha256": cw.digest(observations)}],
@@ -202,7 +234,9 @@ class CompactTests(unittest.TestCase):
             self.assertEqual(item["observations"], 1)
             self.assertEqual(item["quarantined_metadata_records"], 2)
             table = pq.read_table(root / "batch/observations.parquet")
-            self.assertEqual(table.to_pylist(), [{"date": "2020-01-01T00:01:00Z", "language": "zh", "source_url": "https://example.org/article", "text": "中文 news"}])
+            self.assertEqual(table.select(cw.BASE_COLUMNS).to_pylist(), [{"date": "2020-01-01T00:01:00Z", "language": "zh", "source_url": "https://example.org/article", "text": "中文 news"}])
+            self.assertEqual(table["metadata"].to_pylist()[0]["source_minute"], cw.FIRST)
+            self.assertEqual(table["metadata"].to_pylist()[0]["raw_sha256"], raw_sha)
 
 
 if __name__ == "__main__":
