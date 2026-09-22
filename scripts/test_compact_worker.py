@@ -17,6 +17,7 @@ from test_worker import FakeHub, publication
 def settings(root):
     return SimpleNamespace(state=root, collector="collector", exporter="exporter", threads=1,
                            min_free_gib=12, shard_gib=0.25, max_expanded_mib=2048,
+                           download_workers=4, collect_window_minutes=15,
                            max_download_mib=512, max_fragments=8_000_000,
                            start=cw.FIRST, lag_minutes=1, batch_minutes=360, retry_missing_hours=24)
 
@@ -25,6 +26,24 @@ def record(batch):
     result = publication(batch)
     result.update(kind="forward", pipeline=cw.PIPELINE, missing_minutes=[])
     return result
+
+
+def collection_result(root, command, statuses=None):
+    start = command[command.index("--start") + 1]
+    end = command[command.index("--end") + 1]
+    latest = root / "batch/archive/runs/current"
+    minute, complete, missing = start, 0, 0
+    while minute <= end:
+        status = (statuses or {}).get(minute, "missing")
+        complete += status == "complete"
+        missing += status == "missing"
+        cw.write_json(latest / (minute + ".json"), {
+            "status": status, "minute": cw.parse_minute(minute).isoformat()})
+        minute = cw.successor(minute)
+    cw.write_json(latest / "summary.json", {"completed": complete, "missing": missing, "failed": 0})
+    cw.write_json(latest / "request.json", {"profile": "current", "start": cw.parse_minute(start).isoformat(),
+                                           "end": cw.parse_minute(end).isoformat()})
+    return latest
 
 
 class CompactTests(unittest.TestCase):
@@ -178,8 +197,7 @@ class CompactTests(unittest.TestCase):
             root = Path(d)
             args = settings(root)
             def fake_run(command):
-                latest = root / "batch/archive/runs/current"
-                cw.write_json(latest / "summary.json", {"completed": 0, "missing": 1, "failed": 0})
+                collection_result(root, command)
             with patch("compact_worker.run", side_effect=fake_run), patch("compact_worker.check_space"):
                 item = cw.build_batch(args, cw.FIRST, cw.FIRST)
             self.assertEqual(item["missing_minutes"], [cw.FIRST])
@@ -215,9 +233,7 @@ class CompactTests(unittest.TestCase):
                                    "estimated_observations": 0, "bounded_fallback_observations": 0})
                     return
                 archive = root / "batch/archive"
-                latest = archive / "runs/current"
-                cw.write_json(latest / "summary.json", {"completed": 1, "missing": 0, "failed": 0})
-                cw.write_json(latest / "request.json", {"profile": "current"})
+                collection_result(root, command, {cw.FIRST: "complete"})
                 raw = archive / "raw/2020/01/01" / (cw.FIRST + ".webngrams.json.gz")
                 raw.parent.mkdir(parents=True)
                 raw.write_bytes(gzip.compress(b"raw source"))
@@ -237,6 +253,56 @@ class CompactTests(unittest.TestCase):
             self.assertEqual(table.select(cw.BASE_COLUMNS).to_pylist(), [{"date": "2020-01-01T00:01:00Z", "language": "zh", "source_url": "https://example.org/article", "text": "中文 news"}])
             self.assertEqual(table["metadata"].to_pylist()[0]["source_minute"], cw.FIRST)
             self.assertEqual(table["metadata"].to_pylist()[0]["raw_sha256"], raw_sha)
+
+    def test_windows_resolve_every_minute_in_order_with_bounded_downloads(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            args = settings(root)
+            args.collect_window_minutes = 3
+            args.max_download_mib = 1024
+            calls = []
+            def fake_run(command):
+                calls.append(command)
+                collection_result(root, command)
+            end = "20200101000800"
+            with patch("compact_worker.run", side_effect=fake_run), patch("compact_worker.check_space"):
+                item = cw.build_batch(args, cw.FIRST, end)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual([c[c.index("--downloads") + 1] for c in calls], [3, 3, 2])
+            self.assertEqual([c[c.index("--min-free-gib") + 1] for c in calls], [14, 14, 13])
+            self.assertEqual([x["minute"] for x in item["minutes"]], [f"20200101000{i}00" for i in range(1, 9)])
+            self.assertEqual(item["next_minute"], "20200101000900")
+
+    def test_collector_window_rejects_inconsistent_summary_or_identity(self):
+        for defect in ("summary", "identity", "missing_outcome", "request"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                args = settings(root)
+                def fake_run(command):
+                    latest = collection_result(root, command)
+                    if defect == "summary":
+                        cw.write_json(latest / "summary.json", {"completed": 1, "missing": 0, "failed": 0})
+                    elif defect == "identity":
+                        cw.write_json(latest / (cw.FIRST + ".json"), {"status": "missing", "minute": "2020-01-01T00:02:00Z"})
+                    elif defect == "request":
+                        cw.write_json(latest / "request.json", {"profile": "current", "start": "2020-01-01T00:02:00Z", "end": "2020-01-01T00:02:00Z"})
+                    else:
+                        (latest / (cw.FIRST + ".json")).unlink()
+                with patch("compact_worker.run", side_effect=fake_run), patch("compact_worker.check_space"):
+                    with self.assertRaises((RuntimeError, FileNotFoundError)):
+                        cw.build_batch(args, cw.FIRST, cw.FIRST)
+                self.assertFalse((root / "batch/ready.json").exists())
+
+    def test_size_limit_seals_only_after_all_prefetched_minutes_are_recorded(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            args = settings(root)
+            args.collect_window_minutes = 3
+            args.shard_gib = 0
+            with patch("compact_worker.run", side_effect=lambda command: collection_result(root, command)), patch("compact_worker.check_space"):
+                item = cw.build_batch(args, cw.FIRST, "20200101000800")
+            self.assertEqual(item["end"], "20200101000300")
+            self.assertEqual(len(item["minutes"]), 3)
 
 
 if __name__ == "__main__":

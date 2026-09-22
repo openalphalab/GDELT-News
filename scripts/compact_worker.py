@@ -64,6 +64,42 @@ def verify_local(batch, record):
             raise RuntimeError("Pending publication checksum mismatch")
 
 
+def collect_window(args, archive, start, end):
+    """Reuse the native HTTP pool and overlap bounded downloads with reconstruction."""
+    count = int((parse_minute(end) - parse_minute(start)).total_seconds() // 60) + 1
+    downloads = min(getattr(args, "download_workers", 4), count)
+    # Each concurrent download may consume its full byte allowance. Leave extra
+    # headroom for the other in-flight responses as well as the normal reserve.
+    extra_gib = ((downloads - 1) * args.max_download_mib + 1023) // 1024
+    started = time.monotonic()
+    run([args.collector, "--archive", archive, "--types", "1,2", "--type2-best-effort",
+         "--quarantine-invalid-metadata", "--threads", args.threads,
+         "--max-expanded-mib", args.max_expanded_mib, "--max-fragments", args.max_fragments,
+         "collect", "--start", start, "--end", end, "--downloads", downloads,
+         "--min-free-gib", args.min_free_gib + extra_gib, "--max-download-mib", args.max_download_mib])
+    latest = sorted((archive / "runs").iterdir())[-1]
+    request, summary = read_json(latest / "request.json"), read_json(latest / "summary.json")
+    for key, expected in (("start", start), ("end", end)):
+        actual = datetime.fromisoformat(request[key].replace("Z", "+00:00"))
+        if actual != parse_minute(expected):
+            raise RuntimeError("Collector window does not match requested minutes")
+    if summary["failed"] or summary["completed"] + summary["missing"] != count:
+        raise RuntimeError("Collector did not resolve every source minute")
+    outcomes, minute = {}, start
+    while minute <= end:
+        item = read_json(latest / (minute + ".json"))
+        actual = datetime.fromisoformat(item["minute"].replace("Z", "+00:00"))
+        if actual != parse_minute(minute) or item["status"] not in ("complete", "missing"):
+            raise RuntimeError("Collector returned an invalid per-minute outcome")
+        outcomes[minute] = item["status"]
+        minute = successor(minute)
+    if sum(value == "complete" for value in outcomes.values()) != summary["completed"]:
+        raise RuntimeError("Collector summary disagrees with per-minute outcomes")
+    LOG.info("collected_window start=%s end=%s downloads=%d seconds=%.3f", start, end,
+             downloads, time.monotonic() - started)
+    return outcomes, request["profile"]
+
+
 def build_batch(args, start, maximum_end, kind="forward"):
     batch = args.state / "batch"
     ready = batch / "ready.json"
@@ -87,29 +123,24 @@ def build_batch(args, start, maximum_end, kind="forward"):
     archive.mkdir(exist_ok=True)
     parquet = batch / "observations.parquet"
     outcomes, observations, minute = [], 0, start
+    window, window_end, profile = {}, start, None
     with pq.ParquetWriter(parquet, SCHEMA, compression="zstd", compression_level=9,
                           use_dictionary=["language"]) as writer:
         while minute <= maximum_end:
             check_space(args.state, args.min_free_gib)
             write_json(args.state / "status.json", {"state": "collecting", "kind": kind,
                        "minute": minute, "checked_at": datetime.now(timezone.utc).isoformat()})
-            run([args.collector, "--archive", archive, "--types", "1,2", "--type2-best-effort",
-                 "--quarantine-invalid-metadata", "--threads", args.threads,
-                 "--max-expanded-mib", args.max_expanded_mib, "--max-fragments", args.max_fragments,
-                 "collect", "--start", minute, "--end", minute, "--downloads", "1",
-                 "--min-free-gib", args.min_free_gib, "--max-download-mib", args.max_download_mib])
-            latest = sorted((archive / "runs").iterdir())[-1]
-            summary = read_json(latest / "summary.json")
-            if summary["failed"] or summary["completed"] + summary["missing"] != 1:
-                raise RuntimeError("Collector did not resolve exactly one source minute")
-            outcome = {"minute": minute, "status": "missing" if summary["missing"] else "complete"}
+            if minute not in window:
+                window_end = min(maximum_end, stamp(parse_minute(minute) + timedelta(
+                    minutes=getattr(args, "collect_window_minutes", 15) - 1)))
+                window, profile = collect_window(args, archive, minute, window_end)
+            outcome = {"minute": minute, "status": window[minute]}
             outcomes.append(outcome)
-            if summary["missing"]:
+            if outcome["status"] == "missing":
                 LOG.info("source_missing minute=%s", minute)
             else:
                 raw = archive / "raw" / minute[:4] / minute[4:6] / minute[6:8] / (minute + ".webngrams.json.gz")
                 raw_sha = digest(raw)
-                profile = read_json(latest / "request.json")["profile"]
                 manifest = read_json(archive / "articles" / profile / f"{raw_sha}.manifest.json")
                 articles = archive / manifest["output"]
                 if (manifest["profile"] != profile or manifest["raw"]["sha256"] != raw_sha
@@ -154,7 +185,9 @@ def build_batch(args, start, maximum_end, kind="forward"):
                     outcome["estimated_observations"] = report["estimated_observations"]
                     outcome["bounded_fallback_observations"] = report["bounded_fallback_observations"]
                 LOG.info("reconstructed minute=%s observations=%d total=%d", minute, counts["articles"], observations)
-            if (parquet.stat().st_size >= args.shard_gib * GIB
+            # Finish the collected window before sealing: every prefetched source
+            # is represented in the publication before its local bytes expire.
+            if minute == window_end and (parquet.stat().st_size >= args.shard_gib * GIB
                     or shutil.disk_usage(args.state).free < (args.min_free_gib + 4) * GIB
                     or minute == maximum_end):
                 break
@@ -270,6 +303,8 @@ def main():
     parser.add_argument("--max-hub-storage-gb", type=float, default=7000)
     parser.add_argument("--min-free-gib", type=int, default=12)
     parser.add_argument("--threads", type=int, default=3)
+    parser.add_argument("--download-workers", type=int, default=4)
+    parser.add_argument("--collect-window-minutes", type=int, default=15)
     parser.add_argument("--max-expanded-mib", type=int, default=2048)
     parser.add_argument("--max-download-mib", type=int, default=512)
     parser.add_argument("--max-fragments", type=int, default=8_000_000)
@@ -282,7 +317,8 @@ def main():
             and 1 <= args.lag_minutes <= 60 and 10 <= args.poll_seconds <= 300
             and 1 <= args.retry_missing_hours <= 168 and args.min_free_gib >= 8
             and 1 <= args.max_hub_storage_gb <= 7000
-            and 1 <= args.threads <= 16 and 512 <= args.max_expanded_mib <= 8192
+            and 1 <= args.threads <= 16 and 1 <= args.download_workers <= 8
+            and 1 <= args.collect_window_minutes <= 30 and 512 <= args.max_expanded_mib <= 8192
             and 128 <= args.max_download_mib <= 2048 and 2_000_000 <= args.max_fragments <= 16_000_000):
         parser.error("Invalid resource or live-collection settings")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

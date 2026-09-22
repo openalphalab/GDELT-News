@@ -12,6 +12,20 @@ and Type 2 are included. Only ngram data is used: no country, publisher, author
 or external metadata dependency. The old enriched worker and
 enrichment scripts remain available for separate use, but are not deployed.
 
+Backfill uses 15-minute native collection windows with four concurrent downloads.
+The Rust HTTP connection pool is reused across each window, and bounded downloads
+overlap reconstruction of one input file at a time. All four CPU threads remain
+available for reconstruction. Outputs are exported in chronological order, with
+per-minute results checked against the collector summary before publication.
+A failed or unresolved minute prevents the batch from being published.
+
+Shard-size and low-space sealing happen at window boundaries so prefetched sources
+are not discarded before publication. A shard can exceed its target by one window.
+The download reserve includes the maximum bytes of other in-flight responses.
+Near the live edge, the existing one-minute publication plan reduces the window to
+one minute automatically; this setting does not add 15 minutes of live lag.
+Use `--download-workers 1 --collect-window-minutes 1` for a serial comparison.
+
 Historical source minutes can exceed the CLI's conservative default input size.
 The supplied Compose configuration allows 1 GiB compressed / 4 GiB expanded and
 sixteen million total fragments per minute, while retaining the per-observation and bounded-search
