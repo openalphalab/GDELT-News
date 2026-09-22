@@ -123,9 +123,11 @@ cursor. Repeated 404 probes do not create remote commits.
 Older gaps and arrivals beyond the retry window need a separate repair run.
 
 Retry priority uses a rolling 15-minute freshness window, not the fixed startup
-boundary. The newest due source minute wins within that window. When both ages
-are waiting, three fresh probes are followed by one older gap and a backward
-chunk. Existing retry delays still apply; an in-flight reconstruction is retained.
+boundary. Fresh minutes are checked in due-time order so newly missing timestamps
+cannot keep postponing an older available file. Up to 20 recovery probes run
+before a backward chunk, with every fourth probe reserved for an older gap when
+one is due. This leaves room for a full 15-minute fresh window. Existing retry
+delays still apply; an in-flight reconstruction is retained.
 Older missing live minutes therefore cannot bury newly published source files.
 
 Missing-source retries reuse the Hub checkpoint and preflight quota result for

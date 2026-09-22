@@ -158,12 +158,12 @@ class LatestFirstTests(unittest.TestCase):
             remote = lf.bootstrap(args, None, NOW)
             remote.update(live_next_minute="20260922120000", pending_missing_minutes=["20260922115000"])
             self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "backfill")[2], "repair")
-            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", repair_streak=4)[2], "backfill")
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", repair_streak=lf.FRESH_REPAIR_BURST)[2], "backfill")
             plan = lf.plan_for_lane(args, remote, {}, NOW, "backfill")
             cw.write_json(args.state / "backfill/batch/request.json", {
                 "pipeline": cw.PIPELINE, "kind": "backfill", "start": plan[0], "maximum_end": plan[1]})
             args.collect_window_minutes = 1
-            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", repair_streak=4), plan)
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", repair_streak=lf.FRESH_REPAIR_BURST), plan)
 
     def test_delayed_live_files_take_priority_over_older_historical_retry_queue(self):
         args = settings(Path("unused"))
@@ -180,12 +180,12 @@ class LatestFirstTests(unittest.TestCase):
             args = settings(Path(d))
             remote = lf.bootstrap(args, None, NOW)
             remote.update(live_next_minute="20260922120000", pending_missing_minutes=["20260922115000"])
-            for streak in range(4):
+            for streak in range(lf.FRESH_REPAIR_BURST):
                 self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", streak)[2], "repair")
             # A new-live interruption does not reset the historical fairness budget.
-            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "live", 4)[2], "backfill")
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "live", lf.FRESH_REPAIR_BURST)[2], "backfill")
             remote["live_next_minute"] = "20260922115900"
-            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", 4)[2], "live")
+            self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", lf.FRESH_REPAIR_BURST)[2], "live")
             remote.update(live_next_minute="20260922120000", pending_missing_minutes=["20260922000100"])
             self.assertEqual(lf.choose_work(args, remote, {}, {}, NOW, "repair", 1)[2], "backfill")
 
@@ -199,14 +199,16 @@ class LatestFirstTests(unittest.TestCase):
         schedule = {m: {'next_check': 0} for m in old}
         schedule.update({m: {'next_check': NOW.timestamp() - 1} for m in fresh})
         self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'backfill', 0),
-                         (fresh[-1], fresh[-1], 'repair'))
-        # Most recent due source wins; not-yet-due retries still respect backoff.
-        schedule[fresh[-1]]['next_check'] = NOW.timestamp() + 30
-        self.assertEqual(lf.plan_for_lane(args, remote, schedule, NOW, 'repair')[0], fresh[-2])
+                         (fresh[0], fresh[0], 'repair'))
+        # Serve due fresh work fairly; a newer 404 must not keep an older
+        # available minute waiting. Not-yet-due retries still respect backoff.
+        schedule[fresh[0]]['next_check'] = NOW.timestamp() + 30
+        self.assertEqual(lf.plan_for_lane(args, remote, schedule, NOW, 'repair')[0], fresh[1])
         # The fourth slot cannot starve older gaps, including historical ones.
         self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', 3),
                          (old[0], old[0], 'repair'))
-        self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', 4)[2], 'backfill')
+        self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', 4)[2], 'repair')
+        self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', lf.FRESH_REPAIR_BURST)[2], 'backfill')
         remote['live_next_minute'] = '20260922115900'
         self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'repair', 3)[2], 'live')
 
@@ -225,6 +227,25 @@ class LatestFirstTests(unittest.TestCase):
                 'pipeline': cw.PIPELINE, 'kind': 'repair', 'start': older, 'maximum_end': older})
             self.assertEqual(lf.choose_work(args, remote, schedule, {}, NOW, 'backfill', 0),
                              (older, older, 'repair'))
+
+    def test_full_fresh_window_is_checked_before_another_slow_backfill(self):
+        args = settings(Path('unused'))
+        remote = lf.bootstrap(args, None, NOW)
+        fresh = [cw.stamp(NOW.replace(second=0) - timedelta(minutes=i)) for i in range(1, 16)]
+        older = [cw.stamp(NOW.replace(hour=9, minute=i, second=0)) for i in range(10)]
+        remote.update(live_next_minute='20260922120000', pending_missing_minutes=older + fresh)
+        schedule, checked = {}, []
+        for streak in range(25):
+            plan = lf.choose_work(args, remote, schedule, {}, NOW, 'repair', streak)
+            if plan[2] == 'backfill':
+                break
+            checked.append(plan[0])
+            schedule[plan[0]] = {'next_check': NOW.timestamp() + 300}
+        else:
+            self.fail('Backfill must retain a bounded share of work')
+        self.assertEqual(set(checked).intersection(fresh), set(fresh))
+        self.assertTrue(set(checked).intersection(older))
+        self.assertEqual(len(checked), len(set(checked)))
 
     def test_response_loss_then_other_lane_commit_never_duplicates(self):
         with tempfile.TemporaryDirectory() as d:

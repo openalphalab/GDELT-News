@@ -12,6 +12,7 @@ SCHEDULE = "live-priority-backward-v1"
 LANES = ("live", "backfill", "repair")
 HUB_REFRESH_SECONDS = 30
 FRESH_RETRY_MINUTES = 15
+FRESH_REPAIR_BURST = 20
 
 
 def previous(minute):
@@ -64,11 +65,12 @@ def plan_for_lane(args, remote, schedule, now, lane, prefer_older=False):
         if due:
             # The startup seam is a coverage boundary, not a measure of freshness.
             # Use a rolling window so old live-lane 404s cannot bury new arrivals.
-            fresh_start = cw.stamp(now - timedelta(minutes=FRESH_RETRY_MINUTES))
+            fresh_start = cw.stamp(now.replace(second=0, microsecond=0) - timedelta(minutes=FRESH_RETRY_MINUTES))
             fresh = [m for m in due if m >= fresh_start]
             older = [m for m in due if m < fresh_start]
             if fresh and not (prefer_older and older):
-                minute = max(fresh)
+                # Within the fresh window, overdue work must beat newer 404s.
+                minute = min(fresh, key=lambda m: (schedule.get(m, {}).get("next_check", 0), m))
             else:
                 minute = min(older, key=lambda m: (schedule.get(m, {}).get("next_check", 0), m))
             return minute, minute, lane
@@ -89,16 +91,17 @@ def pending_plan(state, lane):
 
 
 def choose_work(args, remote, schedule, retries, now, last_lane, repair_streak=None):
-    # Latest files always win. Three fresh probes, then one older gap, then a
-    # backward chunk keep both recovery ages progressing. A live interruption
-    # keeps this budget. Without fresh work, one older probe precedes backfill.
+    # A full burst has room for all 15 fresh source minutes plus older-gap slots.
+    # This avoids repeatedly returning to a slow backfill after just three 404s.
+    # New live work still wins and does not reset the recovery budget.
     streak = int(last_lane == "repair") if repair_streak is None else repair_streak
     pending = pending_plan(args.state, "repair")
     repair = pending or plan_for_lane(args, remote, schedule, now, "repair")
-    recent_repair = repair is not None and repair[0] >= cw.stamp(now - timedelta(minutes=FRESH_RETRY_MINUTES))
+    recent_repair = repair is not None and repair[0] >= cw.stamp(
+        now.replace(second=0, microsecond=0) - timedelta(minutes=FRESH_RETRY_MINUTES))
     if not pending and streak % 4 == 3:
         repair = plan_for_lane(args, remote, schedule, now, "repair", prefer_older=True)
-    yield_to_backfill = streak >= (4 if recent_repair else 1)
+    yield_to_backfill = streak >= (FRESH_REPAIR_BURST if recent_repair else 1)
     order = ("live", "backfill", "repair") if yield_to_backfill else ("live", "repair", "backfill")
     for lane in order:
         if retries.get(lane, {}).get("next_check", 0) > now.timestamp():
